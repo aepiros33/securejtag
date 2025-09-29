@@ -1,11 +1,12 @@
+// jtag_mailbox_regfile.sv  (FINAL)
 `timescale 1ns/1ps
 module jtag_mailbox_regfile #(
   parameter int AW = 16,
 
   // ==== OTP 프리로드 상수 (하드코딩) ====
-  parameter bit          OTP_SOFTLOCK    = 1'b1,      // 기본 LOCK
-  parameter logic [2:0]  OTP_LCS         = 3'b010,    // DEV
-  parameter logic [255:0]OTP_PK_ALLOW    = 256'h0123_4567_89AB_CDEF_FEED_FACE_CAFE_BABE_1122_3344_5566_7788_99AA_BBCC_DDEE_FF00,
+  parameter bit           OTP_SOFTLOCK    = 1'b1,      // 기본 LOCK
+  parameter logic [2:0]   OTP_LCS         = 3'b010,    // DEV
+  parameter logic [255:0] OTP_PK_ALLOW    = 256'h0123_4567_89AB_CDEF_FEED_FACE_CAFE_BABE_1122_3344_5566_7788_99AA_BBCC_DDEE_FF00,
 
   // ==== DEV에서만 쓰기 허용 여부(정책 스위치) ====
   parameter bit ALLOW_SOFTLOCK_WRITE_IN_DEV = 1'b1,
@@ -42,7 +43,8 @@ module jtag_mailbox_regfile #(
   output logic             auth_start_pulse,
   output logic             reset_fsm_pulse,
   output logic             debug_done_pulse,
-  output logic             soft_lock_o
+  output logic             soft_lock_o,
+  output logic             bypass_en_o     // ★ 추가: BYPASS_EN 노출
 );
 
   import secure_jtag_pkg::*;
@@ -59,9 +61,10 @@ module jtag_mailbox_regfile #(
   logic auth_start_d, reset_fsm_d, debug_done_d;
   logic done_sticky;           // latch DONE to avoid 1-cycle pulse miss
 
-  // SFR: LCS / SOFTLOCK
+  // SFR: LCS / SOFTLOCK / BYPASS_EN
   logic [31:0] lcs_r;          // [2:0] 사용
   logic        soft_lock_r;
+  logic        bypass_en_r;    // ★
 
   // defaults (power-on)
   localparam logic [31:0] TZPC_DEF      = 32'h0000_003F;
@@ -83,8 +86,9 @@ module jtag_mailbox_regfile #(
   assign debug_done_pulse = debug_done_d;
 
   // SFR exports
-  assign lcs_o       = lcs_r[2:0];
-  assign soft_lock_o = soft_lock_r;
+  assign lcs_o        = lcs_r[2:0];
+  assign soft_lock_o  = soft_lock_r;
+  assign bypass_en_o  = bypass_en_r; // ★
 
   // ------------------ helpers ------------------
   function automatic bit is_pk_in_addr(input logic [AW-1:0] a, output int idx);
@@ -101,7 +105,7 @@ module jtag_mailbox_regfile #(
     return (lcs_r[2:0] == 3'b010);
   endfunction
 
-  // ------------------ decoded CMD hits (mask-based) ------------------
+  // ------------------ decoded CMD hits ------------------
   wire cmd_write_hit  = (bus_cs && bus_we && (bus_addr == ADDR_CMD_L));
   wire start_hit      = cmd_write_hit && ((bus_wdata & `CMD_START_MASK)      != 32'h0);
   wire reset_hit      = cmd_write_hit && ((bus_wdata & `CMD_RESET_FSM_MASK)  != 32'h0);
@@ -110,14 +114,15 @@ module jtag_mailbox_regfile #(
   // ------------------ write path ------------------
   always_ff @(posedge clk or negedge rst_n) begin
     if(!rst_n) begin
-      tzpc_r      <= TZPC_DEF;
-      domain_r    <= DOMAIN_DEF;
-      access_lv_r <= ACCESS_LV_DEF;
-      done_sticky <= 1'b0;
+      tzpc_r       <= TZPC_DEF;
+      domain_r     <= DOMAIN_DEF;
+      access_lv_r  <= ACCESS_LV_DEF;
+      done_sticky  <= 1'b0;
 
       // OTP 프리로드 → SFR
-      soft_lock_r <= OTP_SOFTLOCK;
-      lcs_r       <= {29'h0, OTP_LCS};
+      soft_lock_r  <= OTP_SOFTLOCK;
+      lcs_r        <= {29'h0, OTP_LCS};
+      bypass_en_r  <= 1'b0;              // ★ reset=0
 
       for (int i=0;i<8;i++) begin
         pk_in[i]  <= '0;
@@ -140,13 +145,11 @@ module jtag_mailbox_regfile #(
         why_r <= 32'h0;
       end else if (done_i) begin
         `ifndef SYNTHESIS
-        if (!$isunknown(why_denied_i))
-          why_r <= {24'h0, why_denied_i};
+          if (!$isunknown(why_denied_i)) why_r <= {24'h0, why_denied_i};
         `else
-        why_r <= {24'h0, why_denied_i};
+          why_r <= {24'h0, why_denied_i};
         `endif
       end
-
 
       // DONE sticky
       if (done_i) done_sticky <= 1'b1;
@@ -181,6 +184,10 @@ module jtag_mailbox_regfile #(
           ADDR_SOFTLOCK: begin
             if (ALLOW_SOFTLOCK_WRITE_IN_DEV && is_dev())
               soft_lock_r <= bus_wdata[0];
+          end
+          // ★ BYPASS_EN: (원하면 DEV에서만 허용하도록 is_dev() 조건 추가)
+          ADDR_BYPASS_EN: begin
+            bypass_en_r <= bus_wdata[0];
           end
 
           default: begin
@@ -220,6 +227,7 @@ module jtag_mailbox_regfile #(
       ADDR_ACCESS_LV:  rdata_q = access_lv_r;
       ADDR_WHY_DENIED: rdata_q = why_r;                 // transactional WHY(guarded)
       ADDR_SOFTLOCK:   rdata_q = {31'h0, soft_lock_r};
+      ADDR_BYPASS_EN:  rdata_q = {31'h0, bypass_en_r};  // ★
       ADDR_LCS:        rdata_q = {29'h0, lcs_r[2:0]};
       // NEW: 보호 레지스터 (필터 밖 주소)
       ADDR_PROT:       rdata_q = 32'hABCD_1234;
