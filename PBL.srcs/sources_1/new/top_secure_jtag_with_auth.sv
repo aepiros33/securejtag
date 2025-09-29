@@ -49,19 +49,36 @@ module top_secure_jtag_with_auth (
   logic [31:0] wdata_f, rdata_rf;
   logic        rvalid_rf;
 
-  regbus_filter_prepost #(
-    .AW(16),
-    .PRE_LOW (PRE_ALLOW_LOW),
-    .PRE_HIGH(PRE_ALLOW_HIGH)
-  ) u_flt (
-    .clk, .rst_n,
-    .cs_in(cs), .we_in(we), .addr_in(addr), .wdata_in(wdata),
-    .cs_out(cs_f), .we_out(we_f), .addr_out(addr_f), .wdata_out(wdata_f),
-    .rdata_in(rdata_rf), .rvalid_in(rvalid_rf),
-    .rdata_out(rdata), .rvalid_out(rvalid),
-    .soft_lock(soft_lock),              // << OTP/REG MUX 반영
-    .session_open(dbg_session_en)
-  );
+  // bridge → filter
+    regbus_filter_prepost #(.AW(16)) u_flt (
+      .clk(pclk), .rst_n(presetn),
+    
+      .cs_in   (bus_cs),
+      .we_in   (bus_we),
+      .addr_in (bus_addr),
+      .wdata_in(bus_wdata),
+    
+      // filter → downstream (regfile/mem 공통 인풋)
+      .cs_out   (rb_cs),
+      .we_out   (rb_we),
+      .addr_out (rb_addr),
+      .wdata_out(rb_wdata),
+    
+      // downstream → filter (muxed read-back)
+      .rdata_in (rb_rdata),
+      .rvalid_in(rb_rvalid),
+    
+      // filter → bridge (최종 read-back)
+      .rdata_out(bus_rdata),
+      .rvalid_out(bus_rvalid),
+    
+      .soft_lock     (soft_lock),
+      .session_open  (debug_session_enable)  // (= pk_match || (bypass && LCS==DEV))
+    );
+
+// rb_* 신호를 레지스터 슬레이브/메모리 슬레이브로 디코딩/연결하세요.
+// (중요) 메모리 슬레이브의 write enable은 반드시 rb_we를 사용해야 함.
+
 
   // ---------------- REGFILE ----------------
   jtag_mailbox_regfile u_reg (
