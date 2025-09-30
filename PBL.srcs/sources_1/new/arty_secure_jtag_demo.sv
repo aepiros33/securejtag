@@ -129,34 +129,62 @@ module arty_secure_jtag_axi_demo (
   logic [31:0]  rf_rdata;  logic rf_rvalid;
 
   jtag_mailbox_regfile #(.AW(16)) u_regfile (
-    .clk(pclk), .rst_n(presetn),
-    .bus_cs   (in_sfr ? rb_cs   : 1'b0),
-    .bus_we   (in_sfr ? rb_we   : 1'b0),
-    .bus_addr (rb_addr),
-    .bus_wdata(rb_wdata),
-    .bus_rdata(rf_rdata),
-    .bus_rvalid(rf_rvalid),
+  .clk(pclk), .rst_n(presetn),
 
-    .lcs_o   (lcs),
-    .dbgen_i (dbgen),
-    .pk_match_i(1'b0),         // 테스트 기본 0 (필요 시 FSM 연결)
-    .sig_valid_i(1'b1),        // MVP: 1
-    .auth_pass_i(auth_pass),
-    .why_denied_i(why_denied),
-    .busy_i(1'b0),
-    .done_i(1'b0),
+  // regbus (SFR 영역에서 선택)
+  .bus_cs   (in_sfr ? rb_cs   : 1'b0),
+  .bus_we   (in_sfr ? rb_we   : 1'b0),
+  .bus_addr (rb_addr),
+  .bus_wdata(rb_wdata),
+  .bus_rdata(rf_rdata),
+  .bus_rvalid(rf_rvalid),
 
-    .tzpc_o(tzpc),
-    .domain_o(domain),
-    .access_lv_o(access_lv),
-    .pk_in_o(pk_in_bus),
-    .pk_allow_shadow_o(pk_allow_shadow_bus),
-    .auth_start_pulse(auth_start_pulse),
-    .reset_fsm_pulse(reset_fsm_pulse),
-    .debug_done_pulse(debug_done_pulse),
-    .soft_lock_o(soft_lock),
-    .bypass_en_o(bypass_en)
-  );
+  // ── regfile → (우리가 이미 뽑아 쓰는 신호들) ──
+  .pk_in_o            (pk_in_bus),
+  .pk_allow_shadow_o  (pk_allow_shadow_bus),
+  .auth_start_pulse   (auth_start_pulse),
+  .reset_fsm_pulse    (reset_fsm_pulse),
+  .debug_done_pulse   (debug_done_pulse),
+
+  // ── FSM → regfile (STATUS/WHY 반영용) ──
+  .busy_i             (fsm_busy),
+  .done_i             (fsm_done),
+  .pk_match_i         (fsm_pk_match),
+  .auth_pass_i        (fsm_pass),
+  .why_denied_i       (8'h00),        // WHY를 FSM에서 내면 연결, 없으면 0
+
+  // (나머지 기존 포트들 그대로)
+  .dbgen_i            (dbgen),
+  .soft_lock_o        (soft_lock),
+  .lcs_o              (lcs),
+  .tzpc_o             (tzpc),
+  .domain_o           (domain),
+  .access_lv_o        (access_lv),
+  .bypass_en_o        (bypass_en)
+);
+
+
+// FSM 출력
+logic         fsm_busy, fsm_done;
+logic         fsm_pk_match;
+logic         fsm_pass;             // = auth_pass (MVP)
+
+// auth_fsm_plain: START → BUSY → DONE, 256b 비교 결과로 pass/pk_match 세팅
+auth_fsm_plain #(.PKW(256)) u_auth (
+  .clk      (pclk),
+  .rst_n    (presetn),
+
+  .start    (auth_start_pulse),     // regfile CMD.START 1-cycle pulse
+  .clear    (reset_fsm_pulse | debug_done_pulse), // RESET_FSM 또는 DEBUG_DONE 시 초기화
+
+  .pk_input (pk_in_bus),            // regfile pk_in_o
+  .pk_allow (pk_allow_shadow_bus),  // regfile pk_allow_shadow_o
+
+  .busy     (fsm_busy),
+  .done     (fsm_done),
+  .pk_match (fsm_pk_match),
+  .pass     (fsm_pass)              // = auth_pass
+);
 
   // ── 간단 BRAM (0x100~) - 1-cycle read latency ──
   logic [31:0] mem [0:255];
@@ -192,7 +220,7 @@ module arty_secure_jtag_axi_demo (
     .tzpc      (tzpc),
     .domain    (domain),
     .access_lv (access_lv),
-    .auth_pass (auth_pass),
+    .auth_pass (fsm_pass),
     .bypass_en (bypass_en),
     .dbgen     (dbgen),
     .why_denied(why_denied)
