@@ -1,0 +1,48 @@
+
+AXI: attaching to JTAG-to-AXI...
+INFO: [Labtools 27-2285] Connecting to hw_server url TCP:localhost:3121
+INFO: [Labtools 27-3415] Connecting to cs_server url TCP:localhost:3042
+INFO: [Labtools 27-3414] Connected to existing cs_server.
+INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/210319BD765DA
+INFO: [Labtools 27-2302] Device xc7a100t (JTAG device index = 0) is programmed with a design that has 1 JTAG AXI core(s).
+AXI: attached to: hw_axi_1
+----------------------------------------
+TEST: Basic STATUS/SFR reads
+STATUS   = 0x00000000
+SOFTLOCK = 0x00000001
+LCS      = 0x00000002
+----------------------------------------
+TEST: AXI write-back (TZPC)
+TZPC write-back          PASS  got=0xA5A5A5A5  
+----------------------------------------
+TEST: SOFTLOCK toggle
+SOFTLOCK init = 0x00000001
+SOFTLOCK -> 0            PASS  got=0x00000000  
+SOFTLOCK -> 1            PASS  got=0x00000001  
+----------------------------------------
+TEST: BRAM R/W with lock mask
+UNLOCK read @0x00000100 = 0x11223344
+UNLOCK read @0x00000104 = 0x00000000
+LOCK read @+0            PASS  got=0x00000000  
+LOCK read @+4            PASS  got=0x00000000  
+----------------------------------------
+TEST: PK_ALLOW[0] RW in DEV
+LCS=0x00000002 (DEV=0x2?씠硫´ ?벐湲° ?뿀?슜)
+PK_ALLOW[0] write-back   PASS  got=0xDEADBEEF  
+----------------------------------------
+TEST: AUTH PASS ?넂 0x100 R/W open
+STATUS=0x00000116  AUTH_PASS=1  DBGEN=1
+WHY=0x00000000
+AUTH_PASS bit            PASS  got=0x00000010  
+DBGEN bit                PASS  got=0x00000100  
+WHY is zero              PASS  got=0x00000000  
+R/W @0x100 after AUTH_PASS PASS  got=0xAABBCCDD  
+----------------------------------------
+TEST: AUTH FAIL (PK mismatch) ?넂 0x100 locked
+STATUS=0x00000002  AUTH_PASS=0  DBGEN=0
+STATUS=0x00000002  WHY=0x00000000  PK_MISMATCH=0
+AUTH_PASS bit (should be 0) PASS  got=0x00000000  
+DBGEN bit   (should be 0) PASS  got=0x00000000  
+LOCKED read @0x100 after AUTH_FAIL PASS  got=0x00000000  
+----------------------------------------
+DONE: tests completed.
