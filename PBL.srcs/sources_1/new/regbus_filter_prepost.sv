@@ -46,14 +46,14 @@ module regbus_filter_prepost #(
   assign rvalid_out = pass ? rvalid_in        : (cs_in & ~we_in);
   assign rdata_out  = pass ? rdata_in         : 32'h0000_0000;
 
-`ifdef LOGGING
+`ifndef SYNTHESIS
   always_ff @(posedge clk) if (cs_in) begin
     $display("FLT %s @%0t addr=%h pass=%0d prelocked=%0d in_sfr=%0d",
              we_in ? "WR" : "RD", $time, addr_in, pass, prelocked, in_sfr);
   end
 `endif
  // ===== 여기부터 디버그 추가 =====
-`ifdef LOGGING
+`ifndef SYNTHESIS
   always_ff @(posedge clk) begin
     if (cs_in && !we_in) begin
       $display("DBG RD  pass=%0d prelocked=%0d in_sfr=%0d soft_lock=%0d session_open=%0d addr=%h @%0t",
