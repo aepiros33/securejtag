@@ -1,9 +1,9 @@
 // ============================================================================
 // otp_client_apb.sv
-// (FINAL v8) READ-after-LATCH 정확화:
-//   - DATA/CNT READ는 LATCH 다음 클럭에만 ACK (rd_ready 파이프)
-//   - READ-back은 H_LATCH에서 캡쳐된 shadow 레지스터에서 제공
-//   - EXT trigger(code/fire 정렬) / Debug SFR 유지
+// (FINAL v8a) READ-after-LATCH 정확화 + baseline READ 허용
+//   - DATA/CNT READ는 기본적으로 H_LATCH 다음 클럭에만 ACK (최신값 보장)
+//   - 단, ever_latched==0(부팅 후 첫 READ)일 때는 즉시 ACK하여 0값 반환 → 타임아웃 방지
+//   - EXT trigger/code 정렬, Debug SFR 유지
 //   - Map: 0x0090 CMD(wo), 0x0094 STATUS(ro), 0x0098 DATA(ro), 0x009C CNT(ro)
 //           0x00A0~0x00BC: 디버그
 // ============================================================================
@@ -47,7 +47,7 @@ module otp_client_apb #(
   input  logic               dev_cmd_seen,
   input  logic [CMDW-1:0]    dev_cmd_code_q,
   input  logic               dev_data_valid,
-  input  logic [3:0]         dev_data_nib,
+  input logic [3:0]          dev_data_nib,
   input  logic [1:0]         dev_dv_cnt
 );
 
@@ -75,12 +75,8 @@ module otp_client_apb #(
   // record last addr for debug
   logic [AW-1:0] last_rd_addr, last_wr_addr;
   always_ff @(posedge pclk or negedge presetn) begin
-    if (!presetn) begin
-      last_rd_addr <= '0; last_wr_addr <= '0;
-    end else begin
-      if (rd) last_rd_addr <= a;
-      if (wr) last_wr_addr <= a;
-    end
+    if (!presetn) begin last_rd_addr <= '0; last_wr_addr <= '0; end
+    else begin if (rd) last_rd_addr <= a; if (wr) last_wr_addr <= a; end
   end
 
   // ---------------- Host FSM ------------------
@@ -93,11 +89,11 @@ module otp_client_apb #(
   logic [7:0]      cnt;
 
   // READ-after-LATCH 보장용 shadow + ready 파이프
-  logic [3:0]      data_shadow;      // H_LATCH에서 갱신 → READ-back은 항상 shadow
-  logic [7:0]      cnt_shadow;       // H_LATCH에서 갱신(증분값) → READ-back
-  logic            rd_ready_stage;   // H_LATCH 싸이클에서 1
-  logic            rd_ready;         // H_LATCH 다음 싸이클부터 1 (ACK 가능)
-                                     // 새 CMD 시작 시 0으로 클리어
+  logic [3:0]      data_shadow;
+  logic [7:0]      cnt_shadow;
+  logic            rd_ready_stage;
+  logic            rd_ready;
+  logic            ever_latched;     // ★ 추가: 첫 LATCH 이전 baseline READ 허용
 
   // ---- PMOD sclk (pclk/2)
   logic sclk_div;
@@ -152,44 +148,41 @@ module otp_client_apb #(
       st<=H_IDLE; busy<=1'b0; done_pulse<=1'b0; done_sticky<=1'b0;
       data_nib<=4'h0; data_nib_latched<=4'h0;
       data_shadow<=4'h0; cnt<=8'h00; cnt_shadow<=8'h00;
-      rd_ready_stage<=1'b0; rd_ready<=1'b0;
+      rd_ready_stage<=1'b0; rd_ready<=1'b0; ever_latched<=1'b0;  // ★
       otp_req<=1'b0; lb_cmd_valid<=1'b0; lb_cmd_code<='0;
     end else begin
       st<=nx; done_pulse<=1'b0; lb_cmd_valid<=1'b0;
 
       // rd_ready 파이프
-      rd_ready <= rd_ready_stage;      // H_LATCH 다음 싸이클부터 1
+      rd_ready <= rd_ready_stage;     // H_LATCH 다음 클럭부터 1
 
       unique case(st)
         H_IDLE: begin
           busy    <= 1'b0;
           otp_req <= 1'b0;
-          // 대기상태 유지
         end
 
         H_REQ: begin
-          busy        <= 1'b1;
-          done_sticky <= 1'b0;         // 새 CMD 시작: sticky 클리어
-          rd_ready_stage <= 1'b0;      // READ 허용 플래그 클리어
+          busy           <= 1'b1;
+          done_sticky    <= 1'b0;     // 새 CMD 시작
+          rd_ready_stage <= 1'b0;     // 다음 READ 대기는 다시 잠금
           if (USE_PMOD) otp_req <= 1'b1;
           else begin
             lb_cmd_code  <= cmd_to_issue;
-            lb_cmd_valid <= 1'b1;      // 1클럭 펄스
+            lb_cmd_valid <= 1'b1;     // 1클럭 펄스
           end
         end
 
         H_WAIT: begin
-          if (USE_PMOD) otp_req <= 1'b1;  // 요청 유지
+          if (USE_PMOD) otp_req <= 1'b1;
         end
 
         H_LATCH: begin
-          // 내부 상태 갱신
           data_nib         <= data_sel;
           data_nib_latched <= data_sel;
-
           cnt              <= cnt + 1;
 
-          // READ-back용 shadow 확정 (증분 적용된 값으로)
+          // READ-back shadow (증분 후 값)
           data_shadow      <= data_sel;
           cnt_shadow       <= cnt + 1;
 
@@ -197,8 +190,8 @@ module otp_client_apb #(
           done_pulse       <= 1'b1;
           done_sticky      <= 1'b1;
 
-          // READ 허용은 "다음" 싸이클부터
-          rd_ready_stage   <= 1'b1;
+          ever_latched     <= 1'b1;   // ★ baseline 종료
+          rd_ready_stage   <= 1'b1;   // 다음 클럭부터 ACK OK
 
           otp_req          <= 1'b0;
         end
@@ -208,16 +201,15 @@ module otp_client_apb #(
 
   // ======================================================================
   // APB READ / WRITE ACK
-  //  - STATUS: 즉시 ACK (zero-wait)
-  //  - DATA/CNT: rd_ready==1 일 때만 ACK (H_LATCH 다음 싸이클 보장)
   // ======================================================================
-  wire sel_data = (a == ADDR_OTP_DATA);
-  wire sel_cnt  = (a == ADDR_OTP_CNT);
+  wire sel_data    = (a == ADDR_OTP_DATA);
+  wire sel_cnt     = (a == ADDR_OTP_CNT);
   wire rd_data_req = rd && sel_data;
   wire rd_cnt_req  = rd && sel_cnt;
 
-  // ★ 핵심: DATA/CNT는 rd_ready일 때만 ACK → LATCH+1싸이클 보장
-  wire rd_can_ack  = rd && ( (rd_data_req || rd_cnt_req) ? rd_ready : 1'b1 );
+  // ★ baseline(ever_latched==0)에서는 즉시 ACK 허용
+  wire rd_gate_dc  = (rd_data_req || rd_cnt_req);
+  wire rd_can_ack  = rd && ( rd_gate_dc ? (rd_ready || !ever_latched) : 1'b1 );
 
   always_ff @(posedge pclk or negedge presetn) begin
     if(!presetn) begin pready<=1'b0; prdata<=32'h0; end
@@ -228,8 +220,8 @@ module otp_client_apb #(
         pready <= 1'b1;
         unique case(a)
           ADDR_OTP_STATUS: prdata <= {30'h0, done_sticky, busy};
-          ADDR_OTP_DATA  : prdata <= {28'h0, data_shadow}; // ★ shadow에서 READ-back
-          ADDR_OTP_CNT   : prdata <= {24'h0, cnt_shadow};  // ★ shadow에서 READ-back
+          ADDR_OTP_DATA  : prdata <= {28'h0, data_shadow}; // baseline이면 0
+          ADDR_OTP_CNT   : prdata <= {24'h0, cnt_shadow};  // baseline이면 0
 
           // ---- Host debug
           ADDR_DBG_CMD   : prdata <= {16'h0,
@@ -243,21 +235,21 @@ module otp_client_apb #(
           // ---- Device debug
           ADDR_DBG_DEV0  : prdata <= {20'h0,
                                       dev_cmd_seen, 1'b0,
-                                      dev_cmd_code_q,       // [17:16]
-                                      dev_data_valid,       // [15]
-                                      2'b0, dev_dv_cnt,     // [12:11]
-                                      dev_data_nib};        // [3:0]
+                                      dev_cmd_code_q,
+                                      dev_data_valid,
+                                      2'b0, dev_dv_cnt,
+                                      dev_data_nib};
           ADDR_DBG_DEV1  : prdata <= 32'h0000_0000;
 
           // ---- Host trigger snapshot
           ADDR_DBG_HOST0 : prdata <= {20'h0,
-                                      ext_cmd_code,         // [21:20]
-                                      apb_cmd_fire,         // [19]
-                                      ext_cmd_fire,         // [18]
+                                      ext_cmd_code,
+                                      apb_cmd_fire,
+                                      ext_cmd_fire,
                                       2'b0,
-                                      cmd_new_i,            // [15:14]
-                                      cmd_reg,              // [13:12]
-                                      cmd_to_issue};        // [11:10]
+                                      cmd_new_i,
+                                      cmd_reg,
+                                      cmd_to_issue};
           ADDR_DBG_HOST1 : prdata <= {20'h0,
                                       psel, penable, pwrite, (a==ADDR_OTP_CMD),
                                       last_rd_addr[7:0], last_wr_addr[7:0]};
@@ -268,7 +260,6 @@ module otp_client_apb #(
       end else if (wr) begin
         pready <= 1'b1;  // WRITE는 zero-wait
       end
-      // else: pready=0 유지 (DATA/CNT 준비 전이면 READ wait)
     end
   end
 

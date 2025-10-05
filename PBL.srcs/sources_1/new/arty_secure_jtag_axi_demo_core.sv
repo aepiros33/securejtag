@@ -1,12 +1,11 @@
 // ============================================================================
 // arty_secure_jtag_axi_demo_core.sv
-// (FINAL v8) APB SETUP-latched demux/mux + EXT trigger alignment (root fix)
-//  - APB SETUP에서 주소/쓰기/슬레이브선택 래치 → 전송 전체(SETUP+ACCESS) 동안 고정
-//  - OTP 주소(0x0090~0x009C, 0x00A0~0x00BC)는 host 슬레이브만 타고,
-//    리턴도 host_pready/host_prdata만 선택 (regfile로 새지 않음)
-//  - EXT: SETUP에서 코드 래치 → 다음 클럭 1펄스 FIRE (코드/펄스 정렬 보장)
-//  - otp_client_apb.v8(READ 한 싸이클 지연 + shadow)와 합쳐서
-//    WRITE 직후 READ도 항상 최신값 보장
+// (FINAL v9) 
+//  - APB SETUP-latched demux/mux for OTP SFRs (0x0090~0x009C, 0x00A0~0x00BC)
+//  - Safe EXT trigger (SETUP 생신호 → 다음 클럭 1펄스) for otp_client_apb
+//  - otp_client_apb v8 가정: DATA/CNT READ = H_LATCH+1 에만 ACK (항상 최신)
+//  - ★ 인증 경로 복구: auth_fsm_plain ↔ regfile 바인딩, WHY_DENIED=PK_MISMATCH 세팅
+//  - regbus_filter_prepost.session_open = dbgen (access_policy 출력)
 // ============================================================================
 
 `timescale 1ns/1ps
@@ -68,15 +67,14 @@ module arty_secure_jtag_axi_demo_core (
   wire hit_data_now = in_sfr_now && (a16_now == 16'h0098);
   wire hit_cnt_now  = in_sfr_now && (a16_now == 16'h009C);
   wire hit_dbg_now  = in_sfr_now && (a16_now >= 16'h00A0 && a16_now <= 16'h00BC);
-
   wire host_hit_any_now = hit_cmd_now | hit_stat_now | hit_data_now | hit_cnt_now | hit_dbg_now;
 
-  // SETUP 검출
+  // SETUP 에지 검출
   logic apb_psel_q;
   always_ff @(posedge pclk or negedge presetn) begin
     if(!presetn) apb_psel_q <= 1'b0; else apb_psel_q <= apb_psel;
   end
-  wire apb_setup = apb_psel & ~apb_psel_q; // SETUP 에지
+  wire apb_setup = apb_psel & ~apb_psel_q;
 
   // ★ SETUP에서 주소/쓰기/슬레이브선택/쓰기데이터 래치
   logic [15:0] a16_lat;
@@ -96,12 +94,12 @@ module arty_secure_jtag_axi_demo_core (
   end
 
   // ---------------- APB demux (SETUP-latched) ----------------
-  // HOST 쪽 APB (OTP)
+  // HOST(OTP) 슬레이브
   wire host_psel    = apb_psel    &  apb_is_host_lat;
   wire host_penable = apb_penable &  apb_is_host_lat;
   wire host_pwrite  =               apb_is_host_lat ? apb_write_lat : 1'b0;
 
-  // RF/MEM 쪽 APB
+  // RF/MEM 슬레이브
   wire rf_psel      = apb_psel    & ~apb_is_host_lat;
   wire rf_penable   = apb_penable & ~apb_is_host_lat;
   wire rf_pwrite    =              ~apb_is_host_lat ? apb_write_lat : 1'b0;
@@ -123,11 +121,23 @@ module arty_secure_jtag_axi_demo_core (
     .bus_rdata(bus_rdata), .bus_rvalid(bus_rvalid)
   );
 
-  // Filter/Regfile/Mem (간단 예시: 기존과 동일)
+  // -------- Filter ↔ Regfile/Mem (정책 연동) --------
   logic         rb_cs, rb_we;
   logic [15:0]  rb_addr;
   logic [31:0]  rb_wdata, core_rdata;
   logic         core_rvalid;
+
+  // policy 입출력/연동 신호들
+  logic         soft_lock, dbgen, bypass_en;
+  logic [2:0]   lcs;
+  logic [5:0]   tzpc;
+  logic [3:0]   domain, access_lv;
+  logic [7:0]   why_denied_wire; // policy의 출력은 이름만 확보(사용 안함, 아래 why_denied_auth 사용)
+
+  // 인증 FSM ↔ regfile 신호
+  logic [255:0] pk_in_bus, pk_allow_shadow_bus;
+  logic         auth_start_pulse, reset_fsm_pulse, debug_done_pulse;
+  logic         fsm_busy, fsm_done, fsm_pk_match, fsm_pass;
 
   regbus_filter_prepost #(.AW(16)) u_filter (
     .clk(pclk), .rst_n(presetn),
@@ -135,10 +145,11 @@ module arty_secure_jtag_axi_demo_core (
     .cs_out(rb_cs), .we_out(rb_we), .addr_out(rb_addr), .wdata_out(rb_wdata),
     .rdata_in(core_rdata), .rvalid_in(core_rvalid),
     .rdata_out(bus_rdata), .rvalid_out(bus_rvalid),
-    .soft_lock(soft_lock), .session_open(dbgen)
+    .soft_lock(soft_lock), .session_open(dbgen)   // ★ DBGEN이 열리면 메모리/레지스터 접근 허용
   );
 
-  logic [31:0] rf_rdata; logic rf_rvalid;
+  // Regfile: 인증/정책 레지스터/상태
+  logic [31:0] rf_rdata;  logic rf_rvalid;
 
   jtag_mailbox_regfile #(.AW(16)) u_regfile (
     .clk(pclk), .rst_n(presetn),
@@ -148,16 +159,66 @@ module arty_secure_jtag_axi_demo_core (
     .bus_wdata(rb_wdata),
     .bus_rdata(rf_rdata),
     .bus_rvalid(rf_rvalid),
-    .pk_in_o(), .pk_allow_shadow_o(),
-    .auth_start_pulse(), .reset_fsm_pulse(), .debug_done_pulse(),
-    .busy_i(1'b0), .done_i(1'b0), .pk_match_i(1'b0), .auth_pass_i(1'b0),
-    .why_denied_i(8'h00), .dbgen_i(dbgen),
-    .soft_lock_o(soft_lock), .lcs_o(lcs), .tzpc_o(tzpc),
-    .domain_o(domain), .access_lv_o(access_lv),
-    .bypass_en_o(bypass_en)
+
+    // --- 인증 경로 바인딩 ---
+    .pk_in_o            (pk_in_bus),
+    .pk_allow_shadow_o  (pk_allow_shadow_bus),
+    .auth_start_pulse   (auth_start_pulse),
+    .reset_fsm_pulse    (reset_fsm_pulse),
+    .debug_done_pulse   (debug_done_pulse),
+    .busy_i             (fsm_busy),
+    .done_i             (fsm_done),
+    .pk_match_i         (fsm_pk_match),
+    .auth_pass_i        (fsm_pass),
+    .why_denied_i       (why_denied_auth),  // ★ 아래에서 직접 산출
+
+    // --- 정책/세션/환경 ---
+    .dbgen_i            (dbgen),
+    .soft_lock_o        (soft_lock),
+    .lcs_o              (lcs),
+    .tzpc_o             (tzpc),
+    .domain_o           (domain),
+    .access_lv_o        (access_lv),
+    .bypass_en_o        (bypass_en)
   );
 
-  // MEM (0x100~)
+  // 인증 FSM (단순 비교 기반)
+  auth_fsm_plain #(.PKW(256)) u_auth (
+    .clk      (pclk),
+    .rst_n    (presetn),
+    .start    (auth_start_pulse),
+    .clear    (reset_fsm_pulse | debug_done_pulse),
+    .pk_input (pk_in_bus),
+    .pk_allow (pk_allow_shadow_bus),
+    .busy     (fsm_busy),
+    .done     (fsm_done),
+    .pk_match (fsm_pk_match),
+    .pass     (fsm_pass)
+  );
+
+  // WHY_DENIED 산출: PK 미스매치만 명시(0x08)
+  // (정책 why_denied_wire는 무시; 필요시 OR해도 됨)
+  logic [7:0] why_denied_auth;
+  always_comb begin
+    // DONE이 떨어졌고 매치 실패면 WD_PK_MISMATCH(=0x08) 세트
+    if (fsm_done && !fsm_pk_match)       why_denied_auth = 8'h08;
+    else                                 why_denied_auth = 8'h00;
+  end
+
+  // 정책 모듈: DBGEN 생성 등 (구현체에 의존)
+  access_policy u_policy (
+    .soft_lock (soft_lock),
+    .lcs       (lcs),
+    .tzpc      (tzpc),
+    .domain    (domain),
+    .access_lv (access_lv),
+    .auth_pass (fsm_pass),   // ★ PASS가 세션 오픈/DBGEN 판단에 들어감
+    .bypass_en (bypass_en),
+    .dbgen     (dbgen),
+    .why_denied(why_denied_wire) // 참고용(현재는 미사용)
+  );
+
+  // ---------------- MEM (0x100~) ------------------
   logic [31:0] mem [0:255];  wire [7:0] widx = rb_addr[9:2];
   initial begin integer i; for(i=0;i<256;i=i+1) mem[i]=32'h0; mem[8'h40]=32'hABCD_1234; end
   logic [31:0] mem_rdata; logic mem_rvalid;
@@ -172,6 +233,7 @@ module arty_secure_jtag_axi_demo_core (
     end
   end
 
+  // filter 응답 결합
   assign core_rdata  = (rb_addr < 16'h0100) ? rf_rdata : mem_rdata;
   assign core_rvalid = (rb_addr < 16'h0100) ? rf_rvalid: mem_rvalid;
 
@@ -187,36 +249,30 @@ module arty_secure_jtag_axi_demo_core (
   logic [3:0]  dev_data_nib;
   logic [1:0]  dev_dv_cnt;
 
-  // ★ EXT trigger: SETUP에서 코드 래치 → 다음 클럭 FIRE
-  logic host_setup_q;
-  logic host_cmd_setup;          // 이번 SETUP이 CMD write인지
+  // === SAFE EXT trigger: "현재 SETUP 생신호" → 다음 클럭 1펄스 ===
+  wire host_cmd_setup_now = apb_setup               // 이번 전송의 SETUP
+                          & host_hit_any_now        // OTP 주소
+                          & apb_pwrite              // 쓰기
+                          & (a16_now == 16'h0090);  // CMD 레지스터
+
+  logic host_cmd_setup_q;
   logic [1:0] ext_cmd_code_r;
 
-  // === SAFE EXT trigger: "현재 SETUP 생신호"로 결정 → 다음 클럭 1펄스 ===
-wire host_cmd_setup_now = apb_setup               // 이번 전송의 SETUP 에지
-                        & host_hit_any_now        // 이번 전송 주소가 OTP 구간
-                        & apb_pwrite              // 쓰기
-                        & (a16_now == 16'h0090);  // CMD 레지스터
-
-logic host_cmd_setup_q;
-logic [1:0] ext_cmd_code_r;
-
-always_ff @(posedge pclk or negedge presetn) begin
-  if(!presetn) begin
-    host_cmd_setup_q <= 1'b0;
-    ext_cmd_code_r   <= 2'b00;
-  end else begin
-    host_cmd_setup_q <= host_cmd_setup_now;       // 다음 클럭에 1클럭 펄스
-    if (host_cmd_setup_now)
-      ext_cmd_code_r <= apb_pwdata[1:0];          // 코드 스냅샷
+  always_ff @(posedge pclk or negedge presetn) begin
+    if(!presetn) begin
+      host_cmd_setup_q <= 1'b0;
+      ext_cmd_code_r   <= 2'b00;
+    end else begin
+      host_cmd_setup_q <= host_cmd_setup_now;        // 다음 클럭 1펄스
+      if (host_cmd_setup_now)
+        ext_cmd_code_r <= apb_pwdata[1:0];           // 코드 스냅샷
+    end
   end
-end
 
-wire        ext_cmd_fire = host_cmd_setup_q;      // 1클럭 펄스(다음 클럭)
-wire [1:0]  ext_cmd_code = ext_cmd_code_r;        // 펄스와 동일 클럭에 안정
+  wire        ext_cmd_fire = host_cmd_setup_q;
   wire [1:0]  ext_cmd_code = ext_cmd_code_r;
 
-  // Client (otp_client_apb.v8: DATA/CNT READ는 H_LATCH+1만 ACK)
+  // Client (otp_client_apb v8 가정)
   otp_client_apb #(.AW(16), .CMDW(2), .USE_PMOD(1'b0), .USE_EXT_TRIG(1'b1)) u_otp_host (
     .pclk(pclk), .presetn(presetn),
     .psel   (host_psel),
@@ -259,15 +315,7 @@ wire [1:0]  ext_cmd_code = ext_cmd_code_r;        // 펄스와 동일 클럭에 안정
   assign apb_prdata_mux = apb_is_host_lat ? host_prdata : rf_prdata;
   assign apb_pready_mux = apb_is_host_lat ? host_pready : rf_pready;
 
-  // ---------------- LEDs / policy (더미) ----------------
-  logic soft_lock, dbgen;
-  logic [2:0] lcs; logic [5:0] tzpc; logic [3:0] domain, access_lv; logic [7:0] why_denied; logic bypass_en;
-  access_policy u_policy (
-    .soft_lock(soft_lock), .lcs(lcs), .tzpc(tzpc),
-    .domain(domain), .access_lv(access_lv), .auth_pass(1'b0),
-    .bypass_en(bypass_en), .dbgen(dbgen), .why_denied(why_denied)
-  );
-
+  // ---------------- LEDs ----------------
   assign led[3]=1'b1; assign led[2:0]=3'b000;
   assign led0_g=dbgen; assign led0_r=~dbgen;
   assign led1_r=soft_lock; assign led1_b=~soft_lock;
