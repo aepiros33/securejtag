@@ -1,21 +1,23 @@
 // ============================================================================
-// otp_server_link.sv  (CMDW=2, loopback/PMOD 공용 + debug taps)
-//  - Loopback: 응답 1클럭 지연 + data_valid 2클럭 유지
-//  - Debug taps: dev_cmd_seen, dev_cmd_code_q, dev_data_valid, dev_data_nib, dev_dv_cnt
+// otp_server_link.sv - 4bit DEVICE (CMDW=2, loopback/PMOD 공용)
+//   ? CMDW=2 맵(기본): 00=SOFT(=1), 01=LCS(=2), 10=PKLS(LSB), 11=RESV
+//   ? loopback: 응답 1클럭 지연 + data_valid 2클럭 유지 (보드에서 확실히 잡힘)
+//   ? PMOD 분기: 예시(실전은 CMD 수신 FSM 권장)
+//   ? 파라미터 OTP_* 로 e-fuse(모의) 값을 설정
 // ============================================================================
 
 `timescale 1ns/1ps
 module otp_server_link #(
   parameter int CMDW     = 2,
   parameter bit USE_PMOD = 1'b0,
-  // e-fuse contents
+  // e-fuse contents (mock)
   parameter bit           OTP_SOFTLOCK   = 1'b1,
   parameter logic [2:0]   OTP_LCS        = 3'b010,
   parameter logic [255:0] OTP_PK_ALLOW   = 256'h0123_4567_89AB_CDEF_FEED_FACE_CAFE_BABE_1122_3344_5566_7788_99AA_BBCC_DDEE_FF00
 )(
   input  logic        clk, rst_n,
 
-  // PMOD 링크 (USE_PMOD=1일 때 사용)
+  // PMOD 링크 (USE_PMOD=1 일 때 사용)
   input  logic        otp_sclk,
   input  logic        otp_req,
   output logic        otp_ack,
@@ -25,14 +27,7 @@ module otp_server_link #(
   input  logic             cmd_valid,
   input  logic [CMDW-1:0]  cmd_code,
   output logic             data_valid,
-  output logic [3:0]       data_nib,
-
-  // ---- Debug taps to client ----
-  output logic             dev_cmd_seen,      // pipelined cmd_valid
-  output logic [CMDW-1:0]  dev_cmd_code_q,    // captured command
-  output logic             dev_data_valid,    // equals data_valid
-  output logic [3:0]       dev_data_nib,      // equals data_nib
-  output logic [1:0]       dev_dv_cnt         // internal stretch counter
+  output logic [3:0]       data_nib
 );
 
   // ---------------- fuse source (RO) ----------------
@@ -52,13 +47,14 @@ module otp_server_link #(
     case (c)
       2'b00: do_cmd = {3'b000, f_soft};  // SOFTLOCK bit0 (1)
       2'b01: do_cmd = {1'b0,  f_lcs};    // LCS[2:0] (2)
-      2'b10: do_cmd = f_pk[3:0];         // PK LSB nibble (기본 0)
+      2'b10: do_cmd = f_pk[3:0];         // PK LSB nibble
       default: do_cmd = 4'h0;
     endcase
   endfunction
 
   // ---------------- Loopback (USE_PMOD=0) ----------
   generate if (!USE_PMOD) begin : g_loop
+    // 한 클럭 지연 + data_valid 2클럭 유지
     logic             cmd_v_q;
     logic [CMDW-1:0]  cmd_c_q;
     logic [1:0]       dv_cnt;
@@ -68,11 +64,11 @@ module otp_server_link #(
         cmd_v_q<=1'b0; cmd_c_q<='0;
         data_valid<=1'b0; data_nib<=4'h0; dv_cnt<=2'd0;
       end else begin
-        // pipeline
+        // 1클럭 지연 파이프라인
         cmd_v_q <= cmd_valid;
         if (cmd_valid) cmd_c_q <= cmd_code;
 
-        // dv stretch
+        // data_valid 2클럭 유지(현재+다음)
         if (dv_cnt != 2'd0) begin
           dv_cnt     <= dv_cnt - 1'b1;
           data_valid <= 1'b1;
@@ -81,35 +77,46 @@ module otp_server_link #(
           if (cmd_v_q) begin
             data_nib   <= do_cmd(cmd_c_q);
             data_valid <= 1'b1;
-            dv_cnt     <= 2'd1;   // 현재+다음 총 2클럭
+            dv_cnt     <= 2'd1;
           end
         end
       end
     end
 
-    // debug taps
-    assign dev_cmd_seen   = cmd_v_q;
-    assign dev_cmd_code_q = cmd_c_q;
-    assign dev_data_valid = data_valid;
-    assign dev_data_nib   = data_nib;
-    assign dev_dv_cnt     = dv_cnt;
-
     assign otp_ack  = 1'b0;
     assign otp_dout = 4'h0;
 
   end else begin : g_pmod
-    // (생략) PMOD 모드 예시 FSM
+  // ---------------- PMOD (USE_PMOD=1) ---------------
+    typedef enum logic [1:0] {S_IDLE,S_ACK1,S_ACK0} se;
+    se st, nx;
+    always_ff @(posedge otp_sclk or negedge rst_n) begin
+      if(!rst_n) begin
+        st<=S_IDLE; otp_ack<=1'b0; otp_dout<=4'h0;
+      end else begin
+        st<=nx;
+        case(st)
+          S_IDLE: begin
+            otp_ack <= 1'b0;
+            if (otp_req) begin
+              // (예시) 고정 응답 - 실제 구현은 CMD 수신 FSM으로 교체
+              otp_dout <= do_cmd(2'b00); // SOFT
+            end
+          end
+          S_ACK1: begin otp_ack<=1'b1; end
+          S_ACK0: begin otp_ack<=1'b0; end
+        endcase
+      end
+    end
     assign data_valid = 1'b0;
     assign data_nib   = 4'h0;
-    assign dev_cmd_seen   = 1'b0;
-    assign dev_cmd_code_q = '0;
-    assign dev_data_valid = 1'b0;
-    assign dev_data_nib   = 4'h0;
-    assign dev_dv_cnt     = 2'b00;
-    always_ff @(posedge otp_sclk or negedge rst_n) begin
-      if(!rst_n) begin otp_ack<=1'b0; otp_dout<=4'h0; end
-      else begin otp_ack<=1'b0; otp_dout<=do_cmd(2'b00); end
-    end
   end endgenerate
+
+`ifdef TRACE
+  always_ff @(posedge clk) begin
+    if (cmd_valid)  $display("%t DEV CMD=%b", $time, cmd_code);
+    if (data_valid) $display("%t DEV DATA_NIB=%h", $time, data_nib);
+  end
+`endif
 
 endmodule
