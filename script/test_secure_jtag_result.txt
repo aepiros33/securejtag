@@ -1,3 +1,4 @@
+run_all_tests
 
 AXI: attaching to JTAG-to-AXI...
 INFO: [Labtools 27-2285] Connecting to hw_server url TCP:localhost:3121
@@ -33,19 +34,19 @@ SOFTLOCK -> 1            PASS  got=0x00000001
 TEST: BRAM R/W with lock mask
 INFO: [Labtoolstcl 44-481] WRITE DATA is: 0x00000000
 INFO: [Labtoolstcl 44-481] WRITE DATA is: 0x11223344
-INFO: [Labtoolstcl 44-481] READ DATA is: 11223344
-UNLOCK read @0x00000100 = 0x11223344
+INFO: [Labtoolstcl 44-481] READ DATA is: abcd1234
+UNLOCK read @0x00000100 = 0xABCD1234
 INFO: [Labtoolstcl 44-481] READ DATA is: 00000000
 UNLOCK read @0x00000104 = 0x00000000
 INFO: [Labtoolstcl 44-481] WRITE DATA is: 0x00000001
+INFO: [Labtoolstcl 44-481] READ DATA is: abcd1234
 INFO: [Labtoolstcl 44-481] READ DATA is: 00000000
-INFO: [Labtoolstcl 44-481] READ DATA is: 00000000
-LOCK read @+0            PASS  got=0x00000000  
+LOCK read @+0            FAIL  got=0xABCD1234  expect=0x00000000
 LOCK read @+4            PASS  got=0x00000000  
 ----------------------------------------
 TEST: PK_ALLOW[0] RW in DEV
 INFO: [Labtoolstcl 44-481] READ DATA is: 00000002
-LCS=0x00000002 (DEV=0x2?씠硫´ ?벐湲° ?뿀?슜)
+LCS=0x00000002 (DEV=0x2이면 쓰기 허용)
 INFO: [Labtoolstcl 44-481] WRITE DATA is: 0xDEADBEEF
 INFO: [Labtoolstcl 44-481] READ DATA is: deadbeef
 PK_ALLOW[0] write-back   PASS  got=0xDEADBEEF  

@@ -1,30 +1,37 @@
-// arty_secure_jtag_axi_demo.sv  (FINAL TOP: single-board default, PMOD dual-board ready)
-// JTAG-to-AXI -> AXI-Lite->APB -> apb_reg_bridge -> regbus_filter_prepost
-//              -> decode(SFR/HOSTvsREG | MEM) -> return mux -> filter -> bridge
-`timescale 1ns/1ps
-module arty_secure_jtag_axi_demo #(
-  parameter bit USE_PMOD = 1'b0      // 0=single board(loopback), 1=PMOD dual-board
-)(
-  input  logic        CLK100MHZ,     // Arty A7 100MHz
-  input  logic [3:0]  btn,           // btn[0]=reset
+// ============================================================================
+// arty_secure_jtag_axi_demo_pmod.sv
+//   ▶ PMOD wrapper TOP (두 보드 모드; PMOD 핀 제약 필요)
+//   ▶ 2보드로 확장할 때 이 모듈을 Top으로 사용하세요.
+//     - 호스트(보드1): 이 래퍼를 Top으로, PMOD 핀 XDC 매핑
+//     - 디바이스(보드2): 별도의 server 전용 Top을 올리는 구성이 일반적
+//       (원하면 별도 server-top도 만들어 줄 수 있음)
+// ============================================================================
 
-  // PMOD 헤더 (두 보드용) - USE_PMOD=0일 땐 XDC에 묶지 않으면 됨
+`timescale 1ns/1ps
+module arty_secure_jtag_axi_demo_pmod (
+  input  logic        CLK100MHZ,
+  input  logic [3:0]  btn,
+
+  // PMOD HOST pins
   output logic        otp_sclk,
   output logic        otp_req,
   input  logic        otp_ack,
   input  logic [3:0]  otp_din,
 
   // LEDs
-  output logic [3:0]  led,           // led3 alive, led[2:0] user
-  output logic        led0_r, led0_g,/*led0_b unused*/
-  output logic        led1_r, /*led1_g unused*/ led1_b
+  output logic [3:0]  led,
+  output logic        led0_r, led0_g,
+  output logic        led1_r, led1_b
 );
+  // 이 래퍼는 PMOD를 노출하는 버전입니다.
+  // 내부 시스템은 core와 거의 동일하지만, OTP host는 USE_PMOD=1로 동작시키고
+  // loopback device는 두지 않습니다(외부 보드2가 응답).
 
-  // ── reset/clock ──
+  // ---------------- Clock / Reset ----------------
   wire pclk    = CLK100MHZ;
   wire presetn = ~btn[0];
 
-  // ── JTAG-to-AXI Master IP ──
+  // ---------------- JTAG-to-AXI ------------------
   wire [31:0] m_axi_awaddr, m_axi_wdata, m_axi_araddr, m_axi_rdata;
   wire        m_axi_awvalid, m_axi_awready;
   wire  [3:0] m_axi_wstrb;
@@ -59,14 +66,13 @@ module arty_secure_jtag_axi_demo #(
     .m_axi_rready  (m_axi_rready)
   );
 
-  // ── AXI-Lite -> APB Bridge ──
+  // ------------- AXI-Lite -> APB ----------------
   logic        psel, penable, pwrite, pready;
   logic [31:0] paddr, pwdata, prdata;
 
   axi_lite2apb_bridge #(.AW(16), .AXI_BASE(32'h4000_0000)) u_ax2apb (
     .aclk          (pclk),
     .aresetn       (presetn),
-    // AXI slave
     .s_axi_awaddr  (m_axi_awaddr),
     .s_axi_awvalid (m_axi_awvalid),
     .s_axi_awready (m_axi_awready),
@@ -84,13 +90,12 @@ module arty_secure_jtag_axi_demo #(
     .s_axi_rresp   (m_axi_rresp),
     .s_axi_rvalid  (m_axi_rvalid),
     .s_axi_rready  (m_axi_rready),
-    // APB master
     .psel(psel), .penable(penable), .pwrite(pwrite),
     .paddr(paddr), .pwdata(pwdata),
     .prdata(prdata), .pready(pready)
   );
 
-  // ── APB -> simple bus bridge (★ SFR zero-wait 응답 패치된 버전) ──
+  // ------------- APB -> simple bus ---------------
   logic         bus_cs, bus_we;
   logic [15:0]  bus_addr;
   logic [31:0]  bus_wdata, bus_rdata;
@@ -107,13 +112,13 @@ module arty_secure_jtag_axi_demo #(
     .bus_rdata(bus_rdata), .bus_rvalid(bus_rvalid)
   );
 
-  // ── LOCK 필터 (모든 슬레이브 앞 공통 게이트) ──
+  // ---------------- Filter -----------------------
   logic         rb_cs, rb_we;
   logic [15:0]  rb_addr;
   logic [31:0]  rb_wdata, rb_rdata;
   logic         rb_rvalid;
 
-  // 세션/정책 신호
+  // session/policy
   logic         soft_lock, dbgen;
   logic [2:0]   lcs;
   logic [5:0]   tzpc;
@@ -130,16 +135,14 @@ module arty_secure_jtag_axi_demo #(
     .soft_lock(soft_lock), .session_open(dbgen)
   );
 
-  // ── 디코드 ──
+  // --------------- Decode ------------------------
   wire in_sfr = (rb_addr < 16'h0100);
 
-  // ── AUTH FSM (regfile과 정책 사이) ──
-  // 선언
+  // --------------- AUTH FSM ----------------------
   logic [255:0] pk_in_bus, pk_allow_shadow_bus;
   logic         auth_start_pulse, reset_fsm_pulse, debug_done_pulse;
   logic         fsm_busy, fsm_done, fsm_pk_match, fsm_pass;
-  logic [7:0] fsm_why;
-  // FSM
+
   auth_fsm_plain #(.PKW(256)) u_auth (
     .clk      (pclk),
     .rst_n    (presetn),
@@ -153,30 +156,27 @@ module arty_secure_jtag_axi_demo #(
     .pass     (fsm_pass)
   );
 
-  // ── 레지스터 파일 (SFR) ──
+  // --------------- Regfile (SFR) -----------------
   logic [31:0]  rf_rdata;  logic rf_rvalid;
+
   jtag_mailbox_regfile #(.AW(16)) u_regfile (
     .clk(pclk), .rst_n(presetn),
-
     .bus_cs   (in_sfr ? rb_cs   : 1'b0),
     .bus_we   (in_sfr ? rb_we   : 1'b0),
     .bus_addr (rb_addr),
     .bus_wdata(rb_wdata),
     .bus_rdata(rf_rdata),
     .bus_rvalid(rf_rvalid),
-
     .pk_in_o            (pk_in_bus),
     .pk_allow_shadow_o  (pk_allow_shadow_bus),
     .auth_start_pulse   (auth_start_pulse),
     .reset_fsm_pulse    (reset_fsm_pulse),
     .debug_done_pulse   (debug_done_pulse),
-
     .busy_i             (fsm_busy),
     .done_i             (fsm_done),
     .pk_match_i         (fsm_pk_match),
     .auth_pass_i        (fsm_pass),
     .why_denied_i       (why_denied),
-
     .dbgen_i            (dbgen),
     .soft_lock_o        (soft_lock),
     .lcs_o              (lcs),
@@ -186,15 +186,12 @@ module arty_secure_jtag_axi_demo #(
     .bypass_en_o        (bypass_en)
   );
 
-  // ── OTP CMD Host (SFR window 0x0090~0x009C) ──
-  // host APB SFR ↔ (PMOD or loopback) ↔ device link
+  // --------------- OTP CMD Host (PMOD) -----------
   logic        host_pready;  logic [31:0] host_prdata;
-  logic        lb_cmd_valid, lb_data_valid; logic [7:0] lb_cmd_code; logic [3:0] lb_data_nib;
 
-  otp_client_apb #(.AW(16), .USE_PMOD(USE_PMOD)) u_otp_host (
+  // NOTE: PMOD 모드 - loopback 경로 미사용, 외부 보드2가 응답
+  otp_client_apb #(.AW(16), .USE_PMOD(1'b1)) u_otp_host (
     .pclk(pclk), .presetn(presetn),
-
-    // in_sfr만 대상으로 APB를 넘겨주되, 내부에서 0x0090~ 주소만 응답
     .psel   (in_sfr ? rb_cs : 1'b0),
     .penable(in_sfr ? (rb_we | ~rb_we) : 1'b0),
     .pwrite (in_sfr ? rb_we : 1'b0),
@@ -202,65 +199,38 @@ module arty_secure_jtag_axi_demo #(
     .pwdata (rb_wdata),
     .prdata (host_prdata),
     .pready (host_pready),
-
     .otp_sclk(otp_sclk),
     .otp_req (otp_req),
     .otp_ack (otp_ack),
     .otp_din (otp_din),
-
-    .lb_cmd_valid(lb_cmd_valid),
-    .lb_cmd_code (lb_cmd_code),
-    .lb_data_valid(lb_data_valid),
-    .lb_data_nib (lb_data_nib)
+    .lb_cmd_valid(), .lb_cmd_code(), .lb_data_valid(), .lb_data_nib()
   );
 
-  // ── OTP Device (loopback or PMOD) ──
-  // USE_PMOD=0이면 내부 loopback, 1이면 외부 PMOD 디바이스 응답
-  otp_server_link #(.USE_PMOD(USE_PMOD)) u_otp_dev (
-    .clk       (pclk),
-    .rst_n     (presetn),
-    .otp_sclk  (otp_sclk),
-    .otp_req   (otp_req),
-    .otp_ack   (),             // 외부 PMOD 연결 시 보드2에서 구동
-    .otp_dout  (),             // 외부 PMOD 연결 시 보드2에서 구동
-    .cmd_valid (lb_cmd_valid), // loopback 경로
-    .cmd_code  (lb_cmd_code),
-    .data_valid(lb_data_valid),
-    .data_nib  (lb_data_nib)
-  );
-  // 주의: USE_PMOD=1로 실제 두 보드 연결 시에는
-  //  - 보드1: otp_ack/otp_din[3:0]를 PMOD 입력으로 받고,
-  //  - 보드2: otp_server_link(USE_PMOD=1)을 탑으로 올려 otp_ack/otp_dout[3:0]를 PMOD 출력으로 내보냄.
-
-  // ── MEM (0x100~) ──
-  logic [31:0] mem [0:255];
-  wire  [7:0]  widx = rb_addr[9:2];
+  // --------------- MEM (0x100~) ------------------
+  logic [31:0] mem [0:255];  wire [7:0] widx = rb_addr[9:2];
   initial begin
-    integer i;
-    for (i=0; i<256; i=i+1) mem[i] = 32'h0;
-    mem[8'h40] = 32'hABCD_1234; // 0x100
+    integer i; for (i=0;i<256;i=i+1) mem[i]=32'h0; mem[8'h40]=32'hABCD_1234;
   end
   logic [31:0] mem_rdata; logic mem_rvalid;
   always_ff @(posedge pclk or negedge presetn) begin
-    if(!presetn) begin
-      mem_rvalid <= 1'b0; mem_rdata <= 32'h0;
-    end else begin
+    if(!presetn) begin mem_rvalid<=1'b0; mem_rdata<=32'h0; end
+    else begin
       if (~in_sfr && rb_cs && rb_we)                mem[widx] <= rb_wdata;
       mem_rvalid <= (~in_sfr && rb_cs && ~rb_we);
       if (~in_sfr && rb_cs && ~rb_we)               mem_rdata <= mem[widx];
     end
   end
 
-  // ── SFR 리턴 선택 (host SFR 0x0090~0x009C 우선) ──
+  // ------------- SFR return mux (host win) -------
   wire host_sfr_sel = in_sfr && (rb_addr >= 16'h0090) && (rb_addr <= 16'h009C);
   wire [31:0] sfr_rdata  = host_sfr_sel ? host_prdata  : rf_rdata;
   wire        sfr_rvalid = host_sfr_sel ? host_pready  : rf_rvalid;
 
-  // ── 리턴 mux → 필터로 ──
+  // ------------- Return mux -> Filter ------------
   assign rb_rdata  = in_sfr ? sfr_rdata : mem_rdata;
   assign rb_rvalid = in_sfr ? sfr_rvalid: mem_rvalid;
 
-  // ── 정책 → dbgen(session_open) ──
+  // --------------- Policy ------------------------
   access_policy u_policy (
     .soft_lock (soft_lock),
     .lcs       (lcs),
@@ -273,11 +243,12 @@ module arty_secure_jtag_axi_demo #(
     .why_denied(why_denied)
   );
 
-  // ── LED 표시 ──
+  // --------------- LEDs --------------------------
   assign led[3] = 1'b1;
   assign led[2:0] = 3'b000;
-  assign led0_g = dbgen;          // DEBUG ENABLE = green
-  assign led0_r = ~dbgen;         // DEBUG DISABLE = red
-  assign led1_r = soft_lock;      // 1=LOCK
-  assign led1_b = ~soft_lock;     // 0=BYPASS
+  assign led0_g = dbgen;
+  assign led0_r = ~dbgen;
+  assign led1_r = soft_lock;
+  assign led1_b = ~soft_lock;
+
 endmodule

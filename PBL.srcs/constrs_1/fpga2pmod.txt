@@ -1,0 +1,40 @@
+## PMOD JA (DEVICE / FPGA2) -- HOST와 "역" 매핑
+# JA1  G13  <- otp_req (HOST → DEV in)
+set_property PACKAGE_PIN G13 [get_ports otp_req]
+set_property IOSTANDARD LVCMOS33 [get_ports otp_req]
+set_property PULLDOWN true [get_ports otp_req]
+
+# JA2  B11  <- otp_sclk
+set_property PACKAGE_PIN B11 [get_ports otp_sclk]
+set_property IOSTANDARD LVCMOS33 [get_ports otp_sclk]
+set_property PULLDOWN true [get_ports otp_sclk]
+
+# JA3  A11  -> otp_ack (DEV out → HOST in)
+set_property PACKAGE_PIN A11 [get_ports otp_ack]
+set_property IOSTANDARD LVCMOS33 [get_ports otp_ack]
+set_property DRIVE 4 [get_ports otp_ack]
+set_property SLEW  SLOW [get_ports otp_ack]
+
+# JA4  D12  -> otp_dout[0]
+set_property PACKAGE_PIN D12 [get_ports {otp_dout[0]}]
+set_property IOSTANDARD LVCMOS33 [get_ports {otp_dout[0]}]
+set_property DRIVE 4 [get_ports {otp_dout[0]}]
+set_property SLEW  SLOW [get_ports {otp_dout[0]}]
+
+# JA7  D13  -> otp_dout[1]
+set_property PACKAGE_PIN D13 [get_ports {otp_dout[1]}]
+set_property IOSTANDARD LVCMOS33 [get_ports {otp_dout[1]}]
+set_property DRIVE 4 [get_ports {otp_dout[1]}]
+set_property SLEW  SLOW [get_ports {otp_dout[1]}]
+
+# JA8  B18  -> otp_dout[2]
+set_property PACKAGE_PIN B18 [get_ports {otp_dout[2]}]
+set_property IOSTANDARD LVCMOS33 [get_ports {otp_dout[2]}]
+set_property DRIVE 4 [get_ports {otp_dout[2]}]
+set_property SLEW  SLOW [get_ports {otp_dout[2]}]
+
+# JA9  A18  -> otp_dout[3]
+set_property PACKAGE_PIN A18 [get_ports {otp_dout[3]}]
+set_property IOSTANDARD LVCMOS33 [get_ports {otp_dout[3]}]
+set_property DRIVE 4 [get_ports {otp_dout[3]}]
+set_property SLEW  SLOW [get_ports {otp_dout[3]}]

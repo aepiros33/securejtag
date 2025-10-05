@@ -39,6 +39,19 @@ set_property -dict { PACKAGE_PIN C9    IOSTANDARD LVCMOS33 } [get_ports { btn[1]
 set_property -dict { PACKAGE_PIN B9    IOSTANDARD LVCMOS33 } [get_ports { btn[2] }]; #IO_L11N_T1_SRCC_16 Sch=btn[2]
 set_property -dict { PACKAGE_PIN B8    IOSTANDARD LVCMOS33 } [get_ports { btn[3] }]; #IO_L12P_T1_MRCC_16 Sch=btn[3]
 
+
+## PMOD JA (HOST / FPGA1)  -- LVCMOS33, outputs: DRIVE 4, SLEW SLOW, inputs: PULLDOWN
+# JA1  G13  -> otp_req (HOST out)
+set_property PACKAGE_PIN G13 [get_ports otp_req]
+set_property IOSTANDARD LVCMOS33 [get_ports otp_req]
+set_property DRIVE 4 [get_ports otp_req]
+set_property SLEW  SLOW [get_ports otp_req]
+
+# JA2  B11  -> otp_sclk (HOST out)
+set_property PACKAGE_PIN B11 [get_ports otp_sclk]
+set_property IOSTANDARD LVCMOS33 [get_ports otp_sclk]
+set_property DRIVE 4 [get_ports otp_sclk]
+set_property SLEW  SLOW [get_ports otp_sclk]
 ## Pmod Header JA
 #set_property -dict { PACKAGE_PIN G13   IOSTANDARD LVCMOS33 } [get_ports { ja[0] }]; #IO_0_15 Sch=ja[1]
 #set_property -dict { PACKAGE_PIN B11   IOSTANDARD LVCMOS33 } [get_ports { ja[1] }]; #IO_L4P_T0_15 Sch=ja[2]
