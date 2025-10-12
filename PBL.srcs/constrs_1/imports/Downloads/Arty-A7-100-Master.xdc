@@ -14,7 +14,7 @@ create_clock -add -name sys_clk_pin -period 10.00 -waveform {0 5} [get_ports { C
 #set_property -dict { PACKAGE_PIN A10   IOSTANDARD LVCMOS33 } [get_ports { sw[3] }]; #IO_L14P_T2_SRCC_16 Sch=sw[3]
 
 ## RGB LEDs
-#set_property -dict { PACKAGE_PIN E1    IOSTANDARD LVCMOS33 } [get_ports { led0_b }]; #IO_L18N_T2_35 Sch=led0_b
+set_property -dict { PACKAGE_PIN E1    IOSTANDARD LVCMOS33 } [get_ports { led0_b }]; #IO_L18N_T2_35 Sch=led0_b
 set_property -dict { PACKAGE_PIN F6    IOSTANDARD LVCMOS33 } [get_ports { led0_g }]; #IO_L19N_T3_VREF_35 Sch=led0_g
 set_property -dict { PACKAGE_PIN G6    IOSTANDARD LVCMOS33 } [get_ports { led0_r }]; #IO_L19P_T3_35 Sch=led0_r
 set_property -dict { PACKAGE_PIN G4    IOSTANDARD LVCMOS33 } [get_ports { led1_b }]; #IO_L20P_T3_35 Sch=led1_b
@@ -39,19 +39,6 @@ set_property -dict { PACKAGE_PIN C9    IOSTANDARD LVCMOS33 } [get_ports { btn[1]
 set_property -dict { PACKAGE_PIN B9    IOSTANDARD LVCMOS33 } [get_ports { btn[2] }]; #IO_L11N_T1_SRCC_16 Sch=btn[2]
 set_property -dict { PACKAGE_PIN B8    IOSTANDARD LVCMOS33 } [get_ports { btn[3] }]; #IO_L12P_T1_MRCC_16 Sch=btn[3]
 
-
-## PMOD JA (HOST / FPGA1)  -- LVCMOS33, outputs: DRIVE 4, SLEW SLOW, inputs: PULLDOWN
-# JA1  G13  -> otp_req (HOST out)
-set_property PACKAGE_PIN G13 [get_ports otp_req]
-set_property IOSTANDARD LVCMOS33 [get_ports otp_req]
-set_property DRIVE 4 [get_ports otp_req]
-set_property SLEW  SLOW [get_ports otp_req]
-
-# JA2  B11  -> otp_sclk (HOST out)
-set_property PACKAGE_PIN B11 [get_ports otp_sclk]
-set_property IOSTANDARD LVCMOS33 [get_ports otp_sclk]
-set_property DRIVE 4 [get_ports otp_sclk]
-set_property SLEW  SLOW [get_ports otp_sclk]
 ## Pmod Header JA
 #set_property -dict { PACKAGE_PIN G13   IOSTANDARD LVCMOS33 } [get_ports { ja[0] }]; #IO_0_15 Sch=ja[1]
 #set_property -dict { PACKAGE_PIN B11   IOSTANDARD LVCMOS33 } [get_ports { ja[1] }]; #IO_L4P_T0_15 Sch=ja[2]
