@@ -191,34 +191,29 @@ module arty_secure_jtag_axi_demo_core (
   logic [1:0]  lb_cmd_code;   // CMDW=2
   logic [3:0]  lb_data_nib;
 
-  // APB fan-out: host 주소에만 host APB를 넘김 (psel ≡ penable ≡ host_hit_any)
-  otp_client_apb #(.AW(16), .CMDW(2), .USE_PMOD(1'b0)) u_otp_host (
-    .pclk(pclk), .presetn(presetn),
-    .psel   (host_hit_any ? rb_cs : 1'b0),
-    .penable(host_hit_any ? rb_cs : 1'b0),   // ★ psel과 동일
-    .pwrite (host_hit_any ? rb_we : 1'b0),
-    .paddr  ({16'h0, rb_addr}),
-    .pwdata (rb_wdata),
-    .prdata (host_prdata),
-    .pready (host_pready),
+otp_client_apb #(.AW(16), .CMDW(2), .USE_PMOD(1'b1)) u_otp_host (
+  .pclk(pclk), .presetn(presetn),
+  .psel   (host_hit_any ? rb_cs : 1'b0),
+  .penable(host_hit_any ? rb_cs : 1'b0),
+  .pwrite (host_hit_any ? rb_we  : 1'b0),
+  .paddr  ({16'h0, rb_addr}),
+  .pwdata (rb_wdata),
+  .prdata (host_prdata),
+  .pready (host_pready),
 
-    .otp_sclk(), .otp_req(), .otp_ack(1'b0), .otp_din(4'h0), // PMOD 미사용
+  // PMOD 물리선
+  .otp_sclk(otp_sclk),
+  .otp_req (otp_req),
+  .otp_ack (otp_ack),
+  .otp_din (otp_din),
 
-    .lb_cmd_valid(lb_cmd_valid),
-    .lb_cmd_code (lb_cmd_code),
-    .lb_data_valid(lb_data_valid),
-    .lb_data_nib (lb_data_nib)
-  );
+  // loopback 경로는 미사용 (tie-off)
+  .lb_cmd_valid(1'b0),
+  .lb_cmd_code (2'b0),
+  .lb_data_valid(1'b0),
+  .lb_data_nib (4'h0)
+);
 
-  // loopback device
-  otp_server_link #(.CMDW(2), .USE_PMOD(1'b0)) u_otp_dev (
-    .clk(pclk), .rst_n(presetn),
-    .otp_sclk(), .otp_req(), .otp_ack(), .otp_dout(),
-    .cmd_valid (lb_cmd_valid),
-    .cmd_code  (lb_cmd_code),
-    .data_valid(lb_data_valid),
-    .data_nib  (lb_data_nib)
-  );
 
   // --------------- MEM (0x100~) ------------------
   logic [31:0] mem [0:255];  wire [7:0] widx = rb_addr[9:2];

@@ -41,17 +41,6 @@ set_property -dict { PACKAGE_PIN B8    IOSTANDARD LVCMOS33 } [get_ports { btn[3]
 
 
 ## PMOD JA (HOST / FPGA1)  -- LVCMOS33, outputs: DRIVE 4, SLEW SLOW, inputs: PULLDOWN
-# JA1  G13  -> otp_req (HOST out)
-set_property PACKAGE_PIN G13 [get_ports otp_req]
-set_property IOSTANDARD LVCMOS33 [get_ports otp_req]
-set_property DRIVE 4 [get_ports otp_req]
-set_property SLEW  SLOW [get_ports otp_req]
-
-# JA2  B11  -> otp_sclk (HOST out)
-set_property PACKAGE_PIN B11 [get_ports otp_sclk]
-set_property IOSTANDARD LVCMOS33 [get_ports otp_sclk]
-set_property DRIVE 4 [get_ports otp_sclk]
-set_property SLEW  SLOW [get_ports otp_sclk]
 ## Pmod Header JA
 #set_property -dict { PACKAGE_PIN G13   IOSTANDARD LVCMOS33 } [get_ports { ja[0] }]; #IO_0_15 Sch=ja[1]
 #set_property -dict { PACKAGE_PIN B11   IOSTANDARD LVCMOS33 } [get_ports { ja[1] }]; #IO_L4P_T0_15 Sch=ja[2]
@@ -61,7 +50,51 @@ set_property SLEW  SLOW [get_ports otp_sclk]
 #set_property -dict { PACKAGE_PIN B18   IOSTANDARD LVCMOS33 } [get_ports { ja[5] }]; #IO_L10P_T1_AD11P_15 Sch=ja[8]
 #set_property -dict { PACKAGE_PIN A18   IOSTANDARD LVCMOS33 } [get_ports { ja[6] }]; #IO_L10N_T1_AD11N_15 Sch=ja[9]
 #set_property -dict { PACKAGE_PIN K16   IOSTANDARD LVCMOS33 } [get_ports { ja[7] }]; #IO_25_15 Sch=ja[10]
+## Signals: otp_req, otp_sclk (outputs); otp_ack, otp_din[3:0] (inputs)
+## PMOD JA pin map reference (Arty A7-100T):
+## JA1=G13, JA2=B11, JA3=A11, JA4=D12, JA7=D13, JA8=B18, JA9=A18, JA10=K16
+## IOSTANDARD: LVCMOS33
 
+## Outputs from FPGA1
+set_property PACKAGE_PIN G13 [get_ports {otp_req}]
+set_property IOSTANDARD LVCMOS33 [get_ports {otp_req}]
+set_property DRIVE 8 [get_ports {otp_req}]
+set_property SLEW FAST [get_ports {otp_req}]
+
+set_property PACKAGE_PIN B11 [get_ports {otp_sclk}]
+set_property IOSTANDARD LVCMOS33 [get_ports {otp_sclk}]
+set_property DRIVE 8 [get_ports {otp_sclk}]
+set_property SLEW FAST [get_ports {otp_sclk}]
+
+# otp_cmd[1:0] (Host → Device)
+set_property PACKAGE_PIN U12 [get_ports {otp_cmd[0]}] ; ## JA10
+set_property PACKAGE_PIN V12 [get_ports {otp_cmd[1]}] ; ## JB4
+set_property IOSTANDARD LVCMOS33 [get_ports {otp_cmd[*]}]
+set_property DRIVE 8 [get_ports {otp_cmd[*]}]
+set_property SLEW SLOW [get_ports {otp_cmd[*]}]  ; # 점퍼선이면 SLOW 권장
+## Inputs to FPGA1
+set_property PACKAGE_PIN A11 [get_ports {otp_ack}]
+set_property IOSTANDARD LVCMOS33 [get_ports {otp_ack}]
+set_property PULLUP true [get_ports {otp_ack}]
+
+set_property PACKAGE_PIN D12 [get_ports {otp_din[0]}]
+set_property IOSTANDARD LVCMOS33 [get_ports {otp_din[0]}]
+set_property PULLUP true [get_ports {otp_din[0]}]
+
+#set_property PACKAGE_PIN D13 [get_ports {otp_din[1]}]
+set_property PACKAGE_PIN E15 [get_ports {otp_din[1]}]
+set_property IOSTANDARD LVCMOS33 [get_ports {otp_din[1]}]
+set_property PULLUP true [get_ports {otp_din[1]}]
+
+#set_property PACKAGE_PIN B18 [get_ports {otp_din[2]}]
+set_property PACKAGE_PIN E16 [get_ports {otp_din[2]}]
+set_property IOSTANDARD LVCMOS33 [get_ports {otp_din[2]}]
+set_property PULLUP true [get_ports {otp_din[2]}]
+
+#set_property PACKAGE_PIN A18 [get_ports {otp_din[3]}]
+set_property PACKAGE_PIN D15 [get_ports {otp_din[3]}]
+set_property IOSTANDARD LVCMOS33 [get_ports {otp_din[3]}]
+set_property PULLUP true [get_ports {otp_din[3]}]
 ## Pmod Header JB
 #set_property -dict { PACKAGE_PIN E15   IOSTANDARD LVCMOS33 } [get_ports { jb[0] }]; #IO_L11P_T1_SRCC_15 Sch=jb_p[1]
 #set_property -dict { PACKAGE_PIN E16   IOSTANDARD LVCMOS33 } [get_ports { jb[1] }]; #IO_L11N_T1_SRCC_15 Sch=jb_n[1]

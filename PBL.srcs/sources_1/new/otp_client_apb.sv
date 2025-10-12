@@ -44,10 +44,11 @@ module otp_client_apb #(
   output logic           pready,
 
   // ------------- PMOD link (HOST↔DEVICE) -------------
-  output logic           otp_sclk,     // host clock out (div2 when USE_PMOD=1)
-  output logic           otp_req,      // host request
-  input  logic           otp_ack,      // device data valid
-  input  logic  [3:0]    otp_din,      // device → host data nibble
+  output logic           otp_sclk,   // Host → Dev
+  output logic           otp_req,    // Host → Dev
+  output logic [1:0]     otp_cmd,    // Host → Dev  ★ 추가
+  input  logic           otp_ack,    // Dev  → Host
+  input  logic  [3:0]    otp_din,     // Dev  → Host
 
   // ------------- Loopback (single-board) -------------
   output logic           lb_cmd_valid,
@@ -89,7 +90,7 @@ module otp_client_apb #(
   logic            busy, done_pulse, done_sticky;
   logic [3:0]      data_nib, data_nib_latched;
   logic [7:0]      cnt;
-
+  logic [1:0]      otp_cmd_q;
   // ---- 링크 선택 (PMOD vs loopback)
   wire        data_valid_sel = (USE_PMOD) ? otp_ack      : lb_data_valid;
   wire [3:0]  data_sel       = (USE_PMOD) ? otp_din      : lb_data_nib;
@@ -102,6 +103,8 @@ module otp_client_apb #(
   end
   always_comb begin
     otp_sclk = (USE_PMOD) ? sclk_div : 1'b0;
+    // cmd: USE_PMOD일 때만 고정된 프레임 cmd 내보냄 (아니면 0)
+    otp_cmd  = (USE_PMOD) ? otp_cmd_q : 2'b00;
   end
 
   // ---- CMD write 트리거: 실제 access 유효 싸이클에서 상승 에지 검출
@@ -123,6 +126,17 @@ module otp_client_apb #(
   wire [CMDW-1:0] cmd_new      = pwdata[CMDW-1:0];
   wire [CMDW-1:0] cmd_to_issue = cmd_fire ? cmd_new : cmd_reg;
 
+  // ★ H_REQ 진입 시점에 이번 프레임의 cmd를 고정해 핀에 유지
+  always_ff @(posedge pclk or negedge presetn) begin
+    if (!presetn) begin
+      otp_cmd_q <= 2'b00;
+    end else begin
+      // IDLE→REQ 전이 시 또는 H_REQ 상태 유지 중에 cmd_to_issue 반영
+      if ((st==H_IDLE && nx==H_REQ) || st==H_REQ) begin
+        otp_cmd_q <= cmd_to_issue;
+      end
+    end
+  end
   // ---- next-state
   always_comb begin
     nx = st;
