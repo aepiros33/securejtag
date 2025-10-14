@@ -41,6 +41,7 @@ module otp_server_link #(
   logic        f_soft;
   logic [2:0]  f_lcs;
   logic [255:0]f_pk;
+  
   always_ff @(posedge clk or negedge rst_n) begin
     if(!rst_n) begin
       f_soft <= OTP_SOFTLOCK;
@@ -115,6 +116,7 @@ module otp_server_link #(
     logic        in_frame;
     logic [3:0]  sclk_cnt;
     logic [1:0]  cmd_code_q;
+    logic [1:0] ack_cnt;  // ★ ACK stretch용 2비트 카운터 (2사이클)
 
     always_ff @(posedge clk or negedge rst_n) begin
       if (!rst_n) begin
@@ -123,22 +125,37 @@ module otp_server_link #(
         cmd_code_q <= 2'b00;
         otp_dout   <= 4'h0;
         otp_ack    <= 1'b0;
+        ack_cnt    <= 2'd0;          // ★ 추가
       end else begin
-        otp_ack <= 1'b0; // 기본 0
-
-        if (req_rise) begin
+        // otp_ack 기본 동작: ack_cnt>0 동안 유지(스트레치)
+        otp_ack <= (ack_cnt != 0);
+        if (ack_cnt != 0) begin
+          ack_cnt <= ack_cnt - 1'b1;
+        end
+    
+        // 기존
+        // if (req_rise) begin
+        //   in_frame <= 1'b1;
+        //   sclk_cnt <= 4'd0;
+        // end
+        // 프레임 시작(기존 권장식 유지)
+        if (!in_frame && (req_rise || (req_high && sclk_rise))) begin
           in_frame <= 1'b1;
           sclk_cnt <= 4'd0;
         end
+        // sclk 처리
         if (in_frame && sclk_rise) begin
           if (sclk_cnt == 4'd0) begin
             // ★ 첫 sclk 상승엣지에서 cmd 샘플
             cmd_code_q <= otp_cmd;
             otp_dout   <= do_cmd(otp_cmd); // 즉시 응답 생성
-            otp_ack    <= 1'b1;            // 1클럭 펄스
+
+            ack_cnt    <= 2'd1;  // ★ 다음 두 사이클 동안 ack 유지
+            otp_ack    <= 1'b1;  // ★ 이번 사이클부터 바로 1 (즉시 반영)
           end
           sclk_cnt <= sclk_cnt + 1'b1;
         end
+        // 프레임 종료
         if (in_frame && req_fall) begin
           in_frame <= 1'b0;
           sclk_cnt <= 4'd0;
