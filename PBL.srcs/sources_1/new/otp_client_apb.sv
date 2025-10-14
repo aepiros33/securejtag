@@ -26,6 +26,8 @@ module otp_client_apb #(
   parameter int AW       = 16,
   parameter int CMDW     = 2,
   parameter bit USE_PMOD = 1'b0,
+  parameter bit AUTO_READ_SOFT = 1'b0, // ★ 추가: 리셋 후 자동 READ_SOFT
+  parameter int AUTO_DELAY = 5000, // pclk=100MHz면 ?50us 지연
 
   // 버전 ASCII ('O','T', major, minor) - 기본 "OT8d" = 0x4F543864
   parameter byte OTP_VER_MAJOR_ASCII = "8",
@@ -49,7 +51,8 @@ module otp_client_apb #(
   output logic [1:0]     otp_cmd,    // Host → Dev  ★ 추가
   input  logic           otp_ack,    // Dev  → Host
   input  logic  [3:0]    otp_din,     // Dev  → Host
-
+  output logic           otp_read_soft_done, // 1-cycle pulse on READ_SOFT
+  output logic           otp_read_soft_val,   // soft bit value (LSB)
   // ------------- Loopback (single-board) -------------
   output logic           lb_cmd_valid,
   output logic [CMDW-1:0]lb_cmd_code,
@@ -91,9 +94,43 @@ module otp_client_apb #(
   logic [3:0]      data_nib, data_nib_latched;
   logic [7:0]      cnt;
   logic [1:0]      otp_cmd_q;
+  logic            otp_read_soft_done_r; // pulse reg
+  logic            auto_pending; // ★ 추가
+  logic [$clog2(AUTO_DELAY):0] auto_cnt;
+
+  // PMOD 입력 동기화/에지 검출/데이터 캡처
+  logic [2:0] ack_sync;
+  logic       ack_rise;
+  logic [3:0] data_cap;
+  always_ff @(posedge pclk or negedge presetn) begin
+    if (!presetn) begin
+      ack_sync <= 3'b000;
+      data_cap <= 4'h0;
+    end else begin
+      ack_sync <= {ack_sync[1:0], otp_ack};
+      if (ack_sync[2:1] == 2'b01) begin
+        data_cap <= otp_din;  // ack 상승엣지에서 데이터 샘플
+      end
+    end
+  end
+  assign ack_rise = (ack_sync[2:1] == 2'b01);
+
   // ---- 링크 선택 (PMOD vs loopback)
-  wire        data_valid_sel = (USE_PMOD) ? otp_ack      : lb_data_valid;
-  wire [3:0]  data_sel       = (USE_PMOD) ? otp_din      : lb_data_nib;
+  wire        data_valid_sel = (USE_PMOD) ? ack_rise : lb_data_valid;
+  wire [3:0]  data_sel       = (USE_PMOD) ? data_cap : lb_data_nib;
+  
+  // (수정) auto_pending에는 절대 대입하지 않기
+  always_ff @(posedge pclk or negedge presetn) begin
+    if(!presetn) begin
+      auto_cnt <= AUTO_DELAY;
+    end else if (auto_pending && auto_cnt != 0) begin
+      auto_cnt <= auto_cnt - 1'b1;
+    end
+  end
+
+
+
+wire auto_fire = USE_PMOD && auto_pending && (auto_cnt == 0);
 
   // ---- PMOD sclk (pclk/2)
   logic sclk_div;
@@ -118,7 +155,7 @@ module otp_client_apb #(
 
   // ---- CMD 레지스터 (cmd_fire 에서만 갱신)
   always_ff @(posedge pclk or negedge presetn) begin
-    if (!presetn) cmd_reg <= '0;
+    if (!presetn) cmd_reg <= '0;      
     else if (cmd_fire)    cmd_reg <= pwdata[CMDW-1:0];
   end
 
@@ -133,7 +170,9 @@ module otp_client_apb #(
     end else begin
       // IDLE→REQ 전이 시 또는 H_REQ 상태 유지 중에 cmd_to_issue 반영
       if ((st==H_IDLE && nx==H_REQ) || st==H_REQ) begin
-        otp_cmd_q <= cmd_to_issue;
+        //otp_cmd_q <= (cmd_fire ? cmd_to_issue : (auto_pending ? 2'b00 : otp_cmd_q)); // 자동이면 READ_SOFT(00)
+        if (cmd_fire)       otp_cmd_q <= cmd_to_issue; // 수동 CMD
+        else if (auto_fire) otp_cmd_q <= 2'b00;        // 오토 READ_SOFT(00), 지연 끝난 뒤 1회
       end
     end
   end
@@ -141,7 +180,8 @@ module otp_client_apb #(
   always_comb begin
     nx = st;
     unique0 case (st)
-      H_IDLE : if (cmd_fire)      nx = H_REQ;    // APB-access 에지로만 시작
+      //H_IDLE : if (cmd_fire || (USE_PMOD && auto_pending)) nx = H_REQ; // ★ 추가
+      H_IDLE : if (cmd_fire || auto_fire) nx = H_REQ;
       H_REQ  :                     nx = H_WAIT;
       H_WAIT : if (data_valid_sel) nx = H_LATCH;
       H_LATCH:                     nx = H_IDLE;
@@ -160,8 +200,14 @@ module otp_client_apb #(
       data_nib<=4'h0; data_nib_latched<=4'h0; cnt<=8'h00;
       otp_req<=1'b0; lb_cmd_valid<=1'b0; lb_cmd_code<='0;
       last_cmd_code<='0; last_data_nib<=4'h0;
+      
+      otp_read_soft_done_r <= 1'b0;
+      otp_read_soft_val    <= 1'b0;
+      
+      auto_pending <= AUTO_READ_SOFT;   // ★ 리셋 시 1회 자동 READ_SOFT arm
     end else begin
       st <= nx;
+      otp_read_soft_done_r <= 1'b0;  // default deassert
       done_pulse   <= 1'b0;
       lb_cmd_valid <= 1'b0;
 
@@ -173,9 +219,11 @@ module otp_client_apb #(
         H_REQ: begin
           busy        <= 1'b1;
           done_sticky <= 1'b0;                // 새 CMD: sticky 클리어
-          last_cmd_code <= cmd_to_issue;
+          if (cmd_fire)       last_cmd_code <= cmd_to_issue;
+          else if (auto_fire) last_cmd_code <= 2'b00;
           if (USE_PMOD) begin
-            otp_req <= 1'b1;
+            otp_req <= 1'b1;            
+            //if (!cmd_fire && auto_pending) last_cmd_code <= 2'b00; // ★ 자동일 때 표시            
           end else begin
             lb_cmd_code  <= cmd_to_issue;     // loopback으로 1클럭 펄스
             lb_cmd_valid <= 1'b1;
@@ -193,11 +241,17 @@ module otp_client_apb #(
           done_pulse       <= 1'b1;
           done_sticky      <= 1'b1;           // sticky ON
           otp_req          <= 1'b0;
+          if (auto_pending) auto_pending <= 1'b0; // ★ 자동 1회만
+          if (last_cmd_code == 2'b00) begin
+            otp_read_soft_val    <= data_sel[0]; // SOFTLOCK bit (LSB)
+            otp_read_soft_done_r <= 1'b1;        // 1-cycle pulse
+          end
         end
       endcase
     end
   end
 
+  assign otp_read_soft_done = otp_read_soft_done_r;
   // ---- APB read-back (쓰기에도 zero-wait ACK)
   always_ff @(posedge pclk or negedge presetn) begin
     if (!presetn) begin

@@ -14,7 +14,7 @@ module jtag_mailbox_regfile #(
   parameter bit ALLOW_PK_WRITE_IN_DEV       = 1'b1
 )(
   input  logic             clk, rst_n,
-
+  
   // Simple reg bus (1-cycle write, 1-cycle read-valid)
   input  logic             bus_cs,
   input  logic             bus_we,       // 1=write, 0=read
@@ -44,7 +44,10 @@ module jtag_mailbox_regfile #(
   output logic             reset_fsm_pulse,
   output logic             debug_done_pulse,
   output logic             soft_lock_o,
-  output logic             bypass_en_o     // ★ 추가: BYPASS_EN 노출
+  output logic             bypass_en_o,     // ★ 추가: BYPASS_EN 노출
+    // Added: OTP soft-lock read handshake from otp_client_apb
+  input  logic        otp_read_soft_done,
+  input  logic        otp_read_soft_val
 );
 
   import secure_jtag_pkg::*;
@@ -120,7 +123,7 @@ module jtag_mailbox_regfile #(
       done_sticky  <= 1'b0;
 
       // OTP 프리로드 → SFR
-      soft_lock_r  <= OTP_SOFTLOCK;
+      soft_lock_r  <= 1'b1;   // was: soft_lock_r <= OTP_SOFTLOCK;
       lcs_r        <= {29'h0, OTP_LCS};
       bypass_en_r  <= 1'b0;              // ★ reset=0
 
@@ -201,6 +204,10 @@ module jtag_mailbox_regfile #(
           end
         endcase
       end
+    // [CHANGE #2] capture OTP soft-lock when READ_SOFT completes
+    if (otp_read_soft_done) begin
+      soft_lock_r <= otp_read_soft_val;
+    end
     end
   end
 
