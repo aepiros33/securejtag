@@ -38,7 +38,7 @@ module otp_server_pmod_top (
   otp_server_link #(
     .CMDW(2),
     .USE_PMOD(1'b1),
-    .OTP_SOFTLOCK(1'b1)
+    .OTP_SOFTLOCK(1'b0)
   ) u_otp_dev (
     .clk        (CLK100MHZ),
     .rst_n      (rst_n),

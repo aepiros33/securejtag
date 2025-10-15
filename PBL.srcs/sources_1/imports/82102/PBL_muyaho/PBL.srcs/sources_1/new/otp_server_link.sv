@@ -52,10 +52,10 @@ module otp_server_link #(
 
   // ---------------- nibble generator ----------------
   function automatic [3:0] do_cmd (input logic [CMDW-1:0] c);
-    case (c)
-      2'b00: do_cmd = {3'b000, f_soft};  // SOFTLOCK bit0 (1)
+    case (c)      
       2'b01: do_cmd = {1'b0,  f_lcs};    // LCS[2:0]
       2'b10: do_cmd = f_pk[3:0];         // PK LSB nibble
+      2'b11: do_cmd = {3'b000, f_soft};  // SOFTLOCK bit0 (1)
       default: do_cmd = 4'h0;
     endcase
   endfunction
