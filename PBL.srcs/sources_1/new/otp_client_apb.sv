@@ -1,6 +1,6 @@
 // ============================================================================
 // otp_client_apb.sv  (APB SFR + 4bit link HOST)  [Direct/Loopback/PMOD 공용]
-//   - CMDW=2 : 00=SOFT(=1), 01=LCS(=2), 10=PKLS(LSB), 11=RESV
+//   - CMDW=2 : 11=SOFT(=3), 01=LCS(=2), 10=PKLS(LSB), 00=RESV
 //   - sticky-DONE + latched DATA (DATA는 래치 읽기)
 //   - APB write zero-wait ACK
 //   - CMD 트리거: 실제 APB access 유효 싸이클(acc=psel&penable)에서 CMD write 상승에지 검출
@@ -30,8 +30,8 @@ module otp_client_apb #(
   parameter int AUTO_DELAY = 5000, // pclk=100MHz면 ?50us 지연
 
   // 버전 ASCII ('O','T', major, minor) - 기본 "OT8d" = 0x4F543864
-  parameter byte OTP_VER_MAJOR_ASCII = "8",
-  parameter byte OTP_VER_MINOR_ASCII = "d"
+  parameter byte OTP_VER_MAJOR_ASCII = "9",
+  parameter byte OTP_VER_MINOR_ASCII = "a"
 )(
   input  logic           pclk,
   input  logic           presetn,
@@ -74,7 +74,8 @@ module otp_client_apb #(
   localparam logic [AW-1:0] ADDR_DBG_VER    = 16'h00B4; // ★ version "OT8d"
   localparam logic [AW-1:0] ADDR_DBG_HS0    = 16'h00B8;
   localparam logic [AW-1:0] ADDR_DBG_HS1    = 16'h00BC;
-
+  localparam logic [1:0] READ_SOFT = 2'b11;  // ← 필수 수정
+  
   // 버전 상수 조립
   localparam logic [31:0] DBG_VER_VALUE =
     {8'h4F/*'O'*/, 8'h54/*'T'*/, OTP_VER_MAJOR_ASCII, OTP_VER_MINOR_ASCII};
@@ -97,7 +98,9 @@ module otp_client_apb #(
   logic            otp_read_soft_done_r; // pulse reg
   logic            auto_pending; // ★ 추가
   logic [$clog2(AUTO_DELAY):0] auto_cnt;
-
+  logic issued_is_soft;  // 이 프레임이 READ_SOFT였는지 래치
+  logic [CMDW-1:0] last_cmd_code;      // 마지막으로 디바이스에 보낸 CMD 코드
+  
   // PMOD 입력 동기화/에지 검출/데이터 캡처
   logic [2:0] ack_sync;
   logic       ack_rise;
@@ -166,13 +169,20 @@ wire auto_fire = USE_PMOD && auto_pending && (auto_cnt == 0);
   // ★ H_REQ 진입 시점에 이번 프레임의 cmd를 고정해 핀에 유지
   always_ff @(posedge pclk or negedge presetn) begin
     if (!presetn) begin
-      otp_cmd_q <= 2'b00;
+      otp_cmd_q <= READ_SOFT;      
+      issued_is_soft <= 1'b0;
+      last_cmd_code   <= 2'b00;   // ← 초기화는 여기서만
     end else begin
-      // IDLE→REQ 전이 시 또는 H_REQ 상태 유지 중에 cmd_to_issue 반영
-      if ((st==H_IDLE && nx==H_REQ) || st==H_REQ) begin
-        //otp_cmd_q <= (cmd_fire ? cmd_to_issue : (auto_pending ? 2'b00 : otp_cmd_q)); // 자동이면 READ_SOFT(00)
-        if (cmd_fire)       otp_cmd_q <= cmd_to_issue; // 수동 CMD
-        else if (auto_fire) otp_cmd_q <= 2'b00;        // 오토 READ_SOFT(00), 지연 끝난 뒤 1회
+      // ★ IDLE→REQ 전이 시점에 '이번에 실제로 낼 CMD'를 한 번만 확정
+      if ((st==H_IDLE && nx==H_REQ)) begin
+        logic [1:0] issued_cmd;
+        if (cmd_fire)       issued_cmd = cmd_new;      // 수동 CMD
+        else if (auto_fire) issued_cmd = READ_SOFT;    // 오토
+        else                issued_cmd = cmd_reg;      // (방어적 기본값)
+        
+        otp_cmd_q      <= issued_cmd;                  // 핀 구동도 동일 소스
+        last_cmd_code  <= issued_cmd;                  // 디버그용
+        issued_is_soft <= (issued_cmd == READ_SOFT);   // ★ 이번 프레임이 SOFT였는지 기록
       end
     end
   end
@@ -189,7 +199,7 @@ wire auto_fire = USE_PMOD && auto_pending && (auto_cnt == 0);
   end
 
   // ---- DEV/HS 디버그용 보조 레지스터
-  logic [CMDW-1:0] last_cmd_code;      // 마지막으로 디바이스에 보낸 CMD 코드
+
   logic [3:0]      last_data_nib;      // 마지막으로 수신해 래치된 데이터 니블
 
   // ---- state/data regs
@@ -199,7 +209,7 @@ wire auto_fire = USE_PMOD && auto_pending && (auto_cnt == 0);
       busy <= 1'b0; done_pulse<=1'b0; done_sticky<=1'b0;
       data_nib<=4'h0; data_nib_latched<=4'h0; cnt<=8'h00;
       otp_req<=1'b0; lb_cmd_valid<=1'b0; lb_cmd_code<='0;
-      last_cmd_code<='0; last_data_nib<=4'h0;
+      last_data_nib<=4'h0;
       
       otp_read_soft_done_r <= 1'b0;
       otp_read_soft_val    <= 1'b0;
@@ -219,13 +229,12 @@ wire auto_fire = USE_PMOD && auto_pending && (auto_cnt == 0);
         H_REQ: begin
           busy        <= 1'b1;
           done_sticky <= 1'b0;                // 새 CMD: sticky 클리어
-          if (cmd_fire)       last_cmd_code <= cmd_to_issue;
-          else if (auto_fire) last_cmd_code <= 2'b00;
+
           if (USE_PMOD) begin
             otp_req <= 1'b1;            
             //if (!cmd_fire && auto_pending) last_cmd_code <= 2'b00; // ★ 자동일 때 표시            
           end else begin
-            lb_cmd_code  <= cmd_to_issue;     // loopback으로 1클럭 펄스
+            lb_cmd_code  <= last_cmd_code;   // ← IDLE→REQ에서 확정한 실제 발사 CMD를 사용
             lb_cmd_valid <= 1'b1;
           end
         end
@@ -242,9 +251,10 @@ wire auto_fire = USE_PMOD && auto_pending && (auto_cnt == 0);
           done_sticky      <= 1'b1;           // sticky ON
           otp_req          <= 1'b0;
           if (auto_pending) auto_pending <= 1'b0; // ★ 자동 1회만
-          if (last_cmd_code == 2'b00) begin
-            otp_read_soft_val    <= data_sel[0]; // SOFTLOCK bit (LSB)
-            otp_read_soft_done_r <= 1'b1;        // 1-cycle pulse
+          // 변경:
+          if (issued_is_soft) begin
+            otp_read_soft_val    <= data_sel[0];
+            otp_read_soft_done_r <= 1'b1;
           end
         end
       endcase
@@ -292,7 +302,7 @@ wire auto_fire = USE_PMOD && auto_pending && (auto_cnt == 0);
           ADDR_DBG_VER : prdata <= DBG_VER_VALUE;    // ★ "OT8d"=0x4F543864
           ADDR_DBG_HS0 : begin
             // 간단 호스트 스냅샷: [21:20]=cmd_to_issue, [9:8]=st, [1]=done_sticky, [0]=busy
-            prdata <= {10'h0, cmd_to_issue, 10'h0, st, 6'h0, done_sticky, busy};
+            prdata <= {10'h0, last_cmd_code, 10'h0, st, 6'h0, done_sticky, busy};
           end
           ADDR_DBG_HS1 : begin
             // 여유 필드 (확장용)
