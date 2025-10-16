@@ -16,7 +16,8 @@ module otp_server_link #(
   parameter logic [255:0] OTP_PK_ALLOW   = 256'h0123_4567_89AB_CDEF_FEED_FACE_CAFE_BABE_1122_3344_5566_7788_99AA_BBCC_DDEE_FF0F
 )(
   input  logic        clk, rst_n,
-
+  // ★ 추가: 외부에서 넣는 soft-lock 입력
+  input  logic        soft_lock_i,
   // PMOD 링크 (USE_PMOD=1 일 때 사용)
   input  logic        otp_sclk,       // Host → Dev
   input  logic        otp_req,        // Host → Dev
@@ -47,7 +48,8 @@ module otp_server_link #(
       f_soft <= OTP_SOFTLOCK;
       f_lcs  <= OTP_LCS;
       f_pk   <= OTP_PK_ALLOW;
-    end
+    end else
+      f_soft <= soft_lock_i;   // ★ 스위치(동기화된) 값 반영
   end
 
   // ---------------- nibble generator ----------------
