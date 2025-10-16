@@ -141,7 +141,7 @@ module arty_secure_jtag_axi_demo_core_fpga1 (
     .cs_out(rb_cs), .we_out(rb_we), .addr_out(rb_addr), .wdata_out(rb_wdata),
     .rdata_in(rb_rdata), .rvalid_in(rb_rvalid),
     .rdata_out(bus_rdata), .rvalid_out(bus_rvalid),
-    .soft_lock(soft_lock), .session_open(dbgen)
+    .soft_lock(~soft_lock), .session_open(dbgen)
   );
 
   // --------------- Decode ------------------------
@@ -282,8 +282,8 @@ always_ff @(posedge CLK100MHZ or negedge presetn) begin
     led    <= 4'b1000;         // LED3만 ON (주석도 이 의미로 수정!)
     led0_g <= dbgen;           // 인증 통과(디버그 가능)면 초록
     led0_r <= ~dbgen;          // 아니면 빨강
-    led1_r <= soft_lock;       // soft_lock=1이면 빨강
-    led1_b <= ~soft_lock;      // soft_lock=0이면 파랑
+    led1_r <= ~soft_lock;       // soft_lock=1이면 빨강
+    led1_b <= soft_lock;      // soft_lock=0이면 파랑
   end
 end
 /*

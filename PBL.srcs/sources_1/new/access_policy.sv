@@ -1,7 +1,7 @@
 // access_policy.sv  (FINAL, BYPASS 경로 포함)
 `timescale 1ns/1ps
 module access_policy (
-  input  logic        soft_lock,          // 0이면 BYPASS(세션 오픈)
+  input  logic        soft_lock,          // 1이면 BYPASS(세션 오픈)
   input  logic [2:0]  lcs,                // DEV=3'b010 가정
   input  logic [5:0]  tzpc,
   input  logic [3:0]  domain,
@@ -17,11 +17,11 @@ module access_policy (
     dbgen      = 1'b0;
     why_denied = '0;
 
-    // 1) 소프트락 해제 ⇒ 무조건 오픈
-    if (!soft_lock) begin
+    // [핵심] soft_lock=1이면 바로 오픈
+    if (soft_lock) begin
       dbgen = 1'b1;
     end
-    // 2) DEV + BYPASS_EN=1 ⇒ 오픈
+    // DEV에서 BYPASS_EN=1이면 오픈(보조 우회)
     else if (bypass_en && (lcs == 3'b010)) begin
       dbgen = 1'b1;
     end

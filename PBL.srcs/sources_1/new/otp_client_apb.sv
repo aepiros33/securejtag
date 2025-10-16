@@ -16,7 +16,7 @@
 //       0x00A8: DBG_DATA   (RO)
 //       0x00AC: DBG_CNT    (RO)
 //       0x00B0: DBG_DEV0   (RO)  [17:16]=last_cmd_code, [3:0]=last_data_nib
-//       0x00B4: DBG_VER    (RO)  "OT8d"=0x4F543864
+//       0x00B4: DBG_VER    (RO)  "OT9a"=0x4F543961
 //       0x00B8: DBG_HS0    (RO)
 //       0x00BC: DBG_HS1    (RO)
 // ============================================================================
@@ -29,7 +29,7 @@ module otp_client_apb #(
   parameter bit AUTO_READ_SOFT = 1'b0, // ★ 추가: 리셋 후 자동 READ_SOFT
   parameter int AUTO_DELAY = 5000, // pclk=100MHz면 ?50us 지연
 
-  // 버전 ASCII ('O','T', major, minor) - 기본 "OT8d" = 0x4F543864
+  // 버전 ASCII ('O','T', major, minor) - 기본 "OT9a" = 0x4F543961
   parameter byte OTP_VER_MAJOR_ASCII = "9",
   parameter byte OTP_VER_MINOR_ASCII = "a"
 )(

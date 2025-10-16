@@ -123,7 +123,7 @@ module jtag_mailbox_regfile #(
       done_sticky  <= 1'b0;
 
       // OTP 프리로드 → SFR
-      soft_lock_r  <= 1'b1;   // was: soft_lock_r <= OTP_SOFTLOCK;
+      soft_lock_r  <= 1'b0;   // ← 안전 기본값: 1=(디버그ON). OTP 읽히면 갱신됨.
       lcs_r        <= {29'h0, OTP_LCS};
       bypass_en_r  <= 1'b0;              // ★ reset=0
 

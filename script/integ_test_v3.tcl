@@ -135,7 +135,7 @@ proc write_u256 {base words8} {
 }
 
 # ---------- Version check (0xB4) ----------
-set REQUIRED_OTP_VER 0x4F543864  ;# "OT8d"
+set REQUIRED_OTP_VER 0x4F543961  ;# "OT8d"
 
 proc ascii4 {val} {
   set b0 [expr {($val >> 24) & 0xFF}]
@@ -209,7 +209,8 @@ proc otp_suite {} {
   _hr "="
   puts "OTP: single-board loopback tests (CMD=0/1/2)"
   set ok 1
-  puts "* CMD=0 (SOFT)";  if {! [otp_issue_and_check 0 0x1]} { set ok 0 }
+  set ttt   [RD $::A_SOFTLOCK]
+  puts "* CMD=0 (SOFT)";  if {! [otp_issue_and_check 3 $ttt]} { set ok 0 }
   puts "* CMD=1 (LCS)";   if {! [otp_issue_and_check 1 0x2]} { set ok 0 }
   puts "* CMD=2 (PKLS)";  if {! [otp_issue_and_check 2 -1]}  { set ok 0 }
   if {$ok} { _pass "OTP suite completed" } else { _fail "OTP suite had failures" }
@@ -256,6 +257,8 @@ proc auth_pass_scenario {} {
 
 proc auth_fail_scenario {} {
   _hr; puts "AUTH: FAIL scenario (direct 4bit)"
+  # 추가: 잠금 상태로 강제(바이패스 OFF)
+  set_bypass 0
   auth_reset_env
   set pkls [learn_pkls]
   set bad  [expr {($pkls ^ 1) & 0xF}]
@@ -282,13 +285,9 @@ proc auth_fail_scenario {} {
 }
 
 # --- 교체 1: BYPASS 도우미 ---
+# onoff=1 → BYPASS ON(soft_lock=1)
 proc set_bypass {onoff} {
-  # onoff=1 → BYPASS ON(soft_lock=0), onoff=0 → BYPASS OFF(soft_lock=1)
-  if {$onoff} {
-    WR $::A_SOFTLOCK 0x00000000
-  } else {
-    WR $::A_SOFTLOCK 0x00000001
-  }
+  WR $::A_SOFTLOCK [expr {$onoff ? 1 : 0}]
   after 1
 }
 
