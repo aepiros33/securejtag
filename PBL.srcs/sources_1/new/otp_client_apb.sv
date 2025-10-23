@@ -169,7 +169,8 @@ wire auto_fire = USE_PMOD && auto_pending && (auto_cnt == 0);
   // ★ H_REQ 진입 시점에 이번 프레임의 cmd를 고정해 핀에 유지
   always_ff @(posedge pclk or negedge presetn) begin
     if (!presetn) begin
-      otp_cmd_q <= READ_SOFT;      
+      //otp_cmd_q <= READ_SOFT;      
+      otp_cmd_q <= 2'b00;
       issued_is_soft <= 1'b0;
       last_cmd_code   <= 2'b00;   // ← 초기화는 여기서만
     end else begin
