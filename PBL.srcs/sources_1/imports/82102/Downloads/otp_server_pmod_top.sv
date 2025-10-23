@@ -50,7 +50,9 @@ module otp_server_pmod_top #(
   otp_server_link #(
     .CMDW(2),
     .USE_PMOD(1'b1),
-    .OTP_SOFTLOCK(1'b0) // 이제 의미없지
+    .CLK_HZ(100_000_000),
+    .RESP_DELAY_US(1850),     // 0.5ms
+    .ACK_STRETCH_CYC(4)      // ACK 4클럭 유지
   ) u_otp_dev (
     .clk        (CLK100MHZ),
     .rst_n      (rst_n),
