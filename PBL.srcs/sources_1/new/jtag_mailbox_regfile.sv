@@ -76,6 +76,12 @@ module jtag_mailbox_regfile #(
 
   localparam logic [AW-1:0] ADDR_CMD_L  = ADDR_CMD[AW-1:0];
 
+  // ★ SECRET window @ 0x0100..0x010C (16B, 4 words, RO)
+  localparam logic [AW-1:0] SECRET_BASE = 16'h0100;
+  localparam logic [127:0]  SECRET_128  = {
+    32'hC0DE3333, 32'hC0DE2222, 32'hC0DE1111, 32'hC0DE0000
+  };
+
   // pack outs
   assign tzpc_o            = tzpc_r[5:0];
   assign domain_o          = domain_r[3:0];
@@ -201,51 +207,66 @@ module jtag_mailbox_regfile #(
               if (ALLOW_PK_WRITE_IN_DEV && is_dev())
                 pk_ref[idx] <= bus_wdata;    // DEV에서만 수정 허용
             end
+            // writes to SECRET window are ignored (RO)
           end
         endcase
       end
-    // [CHANGE #2] capture OTP soft-lock when READ_SOFT completes
-    if (otp_read_soft_done) begin
-      soft_lock_r <= otp_read_soft_val;
-    end
+      // capture OTP soft-lock when READ_SOFT completes
+      if (otp_read_soft_done) begin
+        soft_lock_r <= otp_read_soft_val;
+      end
     end
   end
 
-  // ------------------ read path ------------------
+    // ------------------ read path ------------------
   logic [31:0] rdata_q;
   always_comb begin
     rdata_q = '0;
+
+    // ***** SECRET window: highest priority *****
+    // Cover both byte-addressed (0x100,0x104,0x108,0x10C)
+    // and word-addressed (0x40,0x41,0x42,0x43) buses.
     unique case (bus_addr)
-      ADDR_CMD:       rdata_q = 32'h0; // WO
-      ADDR_STATUS: begin
-        logic [31:0] s;
-        s = '0;
-        s[ST_BUSY]      = busy_i;                       // reflect FSM BUSY
-        s[ST_DONE]      = (done_i | done_sticky);       // pulse OR sticky
-        s[ST_PK_MATCH]  = pk_match_i;
-        s[ST_SIG_VALID] = sig_valid_i;
-        s[ST_AUTH_PASS] = auth_pass_i;
-        s[ST_DBGEN]     = dbgen_i;                      // 세션 래치 미러
-        rdata_q = s;
-      end
-      // PK_IN[*] are WO - read-as-zero
-      ADDR_TZPC:       rdata_q = tzpc_r;
-      ADDR_DOMAIN:     rdata_q = domain_r;
-      ADDR_ACCESS_LV:  rdata_q = access_lv_r;
-      ADDR_WHY_DENIED: rdata_q = why_r;                 // transactional WHY(guarded)
-      ADDR_SOFTLOCK:   rdata_q = {31'h0, soft_lock_r};
-      ADDR_BYPASS_EN:  rdata_q = {31'h0, bypass_en_r};  // ★
-      ADDR_LCS:        rdata_q = {29'h0, lcs_r[2:0]};
-      // NEW: 보호 레지스터 (필터 밖 주소)
-      ADDR_PROT:       rdata_q = 32'hABCD_1234;
+      16'h0100, 16'h0040: rdata_q = 32'hC0DE_0000; // 0x100(byte) or 0x40(word)
+      16'h0104, 16'h0041: rdata_q = 32'hC0DE_1111; // 0x104 or 0x41
+      16'h0108, 16'h0042: rdata_q = 32'hC0DE_2222; // 0x108 or 0x42
+      16'h010C, 16'h0043: rdata_q = 32'hC0DE_3333; // 0x10C or 0x43
+
       default: begin
-        int idx;
-        if (is_pk_allow_addr(bus_addr, idx))
-          rdata_q = pk_ref[idx];                        // RW shadow
-        // else keep zero (PK_IN = WO)
+        // ----- original map -----
+        unique case (bus_addr)
+          ADDR_CMD:       rdata_q = 32'h0; // WO
+          ADDR_STATUS: begin
+            logic [31:0] s;
+            s = '0;
+            s[ST_BUSY]      = busy_i;
+            s[ST_DONE]      = (done_i | done_sticky);
+            s[ST_PK_MATCH]  = pk_match_i;
+            s[ST_SIG_VALID] = sig_valid_i;
+            s[ST_AUTH_PASS] = auth_pass_i;
+            s[ST_DBGEN]     = dbgen_i;
+            rdata_q = s;
+          end
+          ADDR_TZPC:       rdata_q = tzpc_r;
+          ADDR_DOMAIN:     rdata_q = domain_r;
+          ADDR_ACCESS_LV:  rdata_q = access_lv_r;
+          ADDR_WHY_DENIED: rdata_q = why_r;
+          ADDR_SOFTLOCK:   rdata_q = {31'h0, soft_lock_r};
+          ADDR_BYPASS_EN:  rdata_q = {31'h0, bypass_en_r};
+          ADDR_LCS:        rdata_q = {29'h0, lcs_r[2:0]};
+          ADDR_PROT:       rdata_q = 32'hABCD_1234;
+          default: begin
+            int idx;
+            if (is_pk_allow_addr(bus_addr, idx))
+              rdata_q = pk_ref[idx];
+            // else keep zero
+          end
+        endcase
       end
     endcase
   end
+
+
 
   // simple 1-cycle read valid
   always_ff @(posedge clk or negedge rst_n) begin
