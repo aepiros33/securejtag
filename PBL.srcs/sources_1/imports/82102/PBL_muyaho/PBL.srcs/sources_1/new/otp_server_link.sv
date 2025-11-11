@@ -1,21 +1,21 @@
 // ============================================================================
-// otp_server_link.sv - 4bit DEVICE (CMDW=2, loopback/PMOD 공용 + PK Dump APB)
-//   ? CMDW=2 맵: 01=LCS(=2), 10=PKLS(LSB), 11=SOFT(=1), 00=RESV
-//   ? loopback: 응답 1클럭 지연 + data_valid 2클럭 유지 (+지연 적용)
-//   ? PMOD: 첫 sclk 상승엣지에서 CMD(2bit) 샘플 후 do_cmd() 수행 (+지연 적용)
-//   ? APB: f_pk[255:0] 전체를 읽기 전용 제공 (8×32bit, 0x00~0x1C)
+// otp_server_link.sv - PMOD 전용 4bit DEVICE (CMDW=2) + PK Dump APB
+//   CMD 맵(2b): 01=LCS(3b), 10=PKLS(LSB nibble), 11=SOFT(1b), 00=RESV
+//   동작: 첫 sclk 상승엣지에서 헤더 카운트(sclk_cnt==10) 시 CMD 샘플
+//         응답 직전 PRETRIG_ADV_CYC 클럭 전에 em_trig_o 펄스 출력
+//         이후 otp_dout/otp_ack 응답
 // ============================================================================
-
 `timescale 1ns/1ps
 module otp_server_link #(
-  parameter int CMDW     = 2,
-  parameter bit USE_PMOD = 1'b0,
+  parameter int CMDW = 2,
 
-  // ================== DELAY PATCH (config) ==================
-  parameter int unsigned CLK_HZ          = 100_000_000,   // 내부 클럭 (Hz)
-  parameter int unsigned RESP_DELAY_US   = 1000,          // 응답 지연(us) 기본 1ms
-  parameter int unsigned ACK_STRETCH_CYC = 2,             // ACK 유지 클럭 수
-  // ==========================================================
+  // ================== DELAY / PRE-TRIGGER CONFIG ==================
+  parameter int unsigned CLK_HZ               = 100_000_000,
+  parameter int unsigned RESP_DELAY_US        = 0,    // 명시 지연(us)
+  parameter int unsigned ACK_STRETCH_CYC      = 2,    // ACK 유지 폭
+  parameter int unsigned PRETRIG_ADV_CYC      = 20,   // 응답보다 앞선 사전 트리거(클럭)
+  parameter int unsigned PRETRIG_STRETCH_CYC  = 300,  // em_trig_o 펄스 폭(클럭) ★가시성↑
+  // ================================================================
 
   // e-fuse contents (mock)
   parameter bit           OTP_SOFTLOCK   = 1'b1,
@@ -23,20 +23,19 @@ module otp_server_link #(
   parameter logic [255:0] OTP_PK_ALLOW   = 256'h0123_4567_89AB_CDEF_FEED_FACE_CAFE_BABE_1122_3344_5566_7788_99AA_BBCC_DDEE_FF0F
 )(
   input  logic        clk, rst_n,
-  // ★ 추가: 외부에서 넣는 soft-lock 입력
+
+  // ★ 외부 soft-lock 입력(동기화 가정)
   input  logic        soft_lock_i,
-  // PMOD 링크 (USE_PMOD=1 일 때 사용)
+
+  // PMOD 링크
   input  logic        otp_sclk,       // Host → Dev
   input  logic        otp_req,        // Host → Dev
   input  logic [1:0]  otp_cmd,        // Host → Dev
   output logic        otp_ack,        // Dev  → Host
   output logic [3:0]  otp_dout,       // Dev  → Host
 
-  // 루프백(싱글보드) 모드 입력
-  input  logic             cmd_valid,
-  input  logic [CMDW-1:0]  cmd_code,
-  output logic             data_valid,
-  output logic [3:0]       data_nib,
+  // ★ EMFI 타이밍용 사전 트리거(계측기/EM 장비 트리거 입력으로 사용)
+  output logic        em_trig_o,
 
   // ★ APB read-only 포트 (PK Dump용)
   input  logic             psel,
@@ -45,11 +44,16 @@ module otp_server_link #(
   output logic             pready
 );
 
-  // ================== DELAY PATCH (derived) =================
-  // RESP_DELAY_CYCLES: 응답을 지연할 클럭 수 (0이면 즉시 응답)
-  localparam int unsigned RESP_DELAY_CYCLES =
-      (CLK_HZ/1_000_000) * RESP_DELAY_US;
-  // ==========================================================
+  // ================== 파생 상수 =================
+  localparam int unsigned RESP_DELAY_CYCLES = (CLK_HZ/1_000_000) * RESP_DELAY_US;
+
+  // 실제 응답까지의 지연은 "요청 지연"과 "사전 트리거 여유" 중 큰 값으로 강제
+  function automatic [31:0] get_resp_gap();
+    automatic int unsigned rdc = RESP_DELAY_CYCLES;
+    if (rdc < PRETRIG_ADV_CYC) get_resp_gap = PRETRIG_ADV_CYC;
+    else                       get_resp_gap = rdc;
+  endfunction
+  // =============================================
 
   // ---------------- fuse source (RO) ----------------
   logic        f_soft;
@@ -62,7 +66,7 @@ module otp_server_link #(
       f_lcs  <= OTP_LCS;
       f_pk   <= OTP_PK_ALLOW;
     end else begin
-      f_soft <= soft_lock_i;   // ★ 스위치(동기화된) 값 반영
+      f_soft <= soft_lock_i;   // 외부 입력 반영
     end
   end
 
@@ -71,178 +75,132 @@ module otp_server_link #(
     case (c)
       2'b01: do_cmd = {1'b0,  f_lcs};    // LCS[2:0]
       2'b10: do_cmd = f_pk[3:0];         // PK LSB nibble
-      2'b11: do_cmd = {3'b000, f_soft};  // SOFTLOCK bit0 (1)
+      2'b11: do_cmd = {3'b000, f_soft};  // SOFTLOCK bit0
       default: do_cmd = 4'h0;
     endcase
   endfunction
 
-  // ---------------- Loopback (USE_PMOD=0) ----------
-  generate if (!USE_PMOD) begin : g_loop
-    // 한 클럭 지연 + data_valid 2클럭 유지 (+ 응답 지연 추가)
-    logic             cmd_v_q;
-    logic [CMDW-1:0]  cmd_c_q;
-    logic [1:0]       dv_cnt;
+  // ---------------- PMOD 전용 링크 ----------------
+  // 입력 동기화
+  logic [2:0] sclk_sync, req_sync;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      sclk_sync <= 3'b000; req_sync <= 3'b000;
+    end else begin
+      sclk_sync <= {sclk_sync[1:0], otp_sclk};
+      req_sync  <= {req_sync[1:0],  otp_req };
+    end
+  end
 
-    // ===== DELAY PATCH (loopback) =====
-    logic        pending;
-    logic [31:0] delay_cnt;
-    // ==================================
+  wire sclk_rise = (sclk_sync[2:1] == 2'b01);
+  wire req_rise  = (req_sync[2:1] == 2'b01);
+  wire req_fall  = (req_sync[2:1] == 2'b10);
+  wire req_high  =  req_sync[2];
 
-    always_ff @(posedge clk or negedge rst_n) begin
-      if(!rst_n) begin
-        cmd_v_q   <= 1'b0;
-        cmd_c_q   <= '0;
-        data_valid<= 1'b0;
-        data_nib  <= 4'h0;
-        dv_cnt    <= 2'd0;
-        // DELAY
-        pending   <= 1'b0;
-        delay_cnt <= '0;
+  // 프레임/헤더 래치
+  logic        in_frame;
+  logic [3:0]  sclk_cnt;
+  logic [1:0]  cmd_code_q;
+
+  typedef enum logic [1:0] {IDLE, PENDING, RESPOND} pstate_e;
+  pstate_e     pstate;
+  logic [31:0] delay_cnt;
+  logic [7:0]  ack_cnt;
+
+  // 사전 트리거
+  logic        pre_issued;
+  logic [15:0] pre_cnt;
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      in_frame   <= 1'b0;
+      sclk_cnt   <= 4'd0;
+      cmd_code_q <= 2'b00;
+
+      otp_dout   <= 4'h0;
+      otp_ack    <= 1'b0;
+
+      pstate     <= IDLE;
+      delay_cnt  <= '0;
+      ack_cnt    <= '0;
+
+      pre_issued <= 1'b0;
+      pre_cnt    <= '0;
+      em_trig_o  <= 1'b0;
+    end else begin
+      // 프레임 시작(REQ 상승 or REQ High 상태의 첫 sclk 상승)
+      if (!in_frame && (req_rise || (req_high && sclk_rise))) begin
+        in_frame <= 1'b1;
+        sclk_cnt <= 4'd0;
+      end
+      // sclk 카운트
+      if (in_frame && sclk_rise) begin
+        sclk_cnt <= sclk_cnt + 1'b1;
+      end
+      // 프레임 종료
+      if (in_frame && req_fall) begin
+        in_frame <= 1'b0;
+        sclk_cnt <= 4'd0;
+      end
+
+      // ACK stretch
+      otp_ack <= (ack_cnt != 0);
+      if (ack_cnt != 0) ack_cnt <= ack_cnt - 1'b1;
+
+      // 사전 트리거 펄스 유지
+      if (pre_cnt != 0) begin
+        pre_cnt   <= pre_cnt - 1'b1;
+        em_trig_o <= 1'b1;
       end else begin
-        // 1클럭 파이프라인
-        cmd_v_q <= cmd_valid;
-        if (cmd_valid) cmd_c_q <= cmd_code;
+        em_trig_o <= 1'b0;
+      end
 
-        // ===== 응답 지연 FSM =====
-        if (!pending) begin
-          if (cmd_v_q) begin
-            pending   <= 1'b1;
-            delay_cnt <= (RESP_DELAY_CYCLES == 0) ? 32'd0 : RESP_DELAY_CYCLES - 1;
+      unique case (pstate)
+        IDLE: begin
+          // 헤더 타이밍: sclk_cnt == 10에서 CMD 샘플(기존 설계 준수)
+          if (in_frame && sclk_rise && (sclk_cnt == 4'd10)) begin
+            cmd_code_q <= otp_cmd;
+            // ★ off-by-one 제거: gap 그대로 로드
+            delay_cnt  <= get_resp_gap();            // 최소 PRETRIG_ADV_CYC 보장
+            pre_issued <= 1'b0;
+            pstate     <= (get_resp_gap()==0) ? RESPOND : PENDING;
           end
-        end else begin
+        end
+
+        PENDING: begin
+          // 응답 PRETRIG_ADV_CYC 클럭 전에 사전 트리거 1펄스
+          if (!pre_issued && (delay_cnt == PRETRIG_ADV_CYC)) begin
+            pre_issued <= 1'b1;
+            pre_cnt    <= (PRETRIG_STRETCH_CYC==0) ? 16'd1 : PRETRIG_STRETCH_CYC[15:0];
+            em_trig_o  <= 1'b1;
+          end
+
           if (delay_cnt != 0) begin
             delay_cnt <= delay_cnt - 1'b1;
           end else begin
-            // 지연 종료 → 응답 출력 시작
-            data_nib   <= do_cmd(cmd_c_q);
-            data_valid <= 1'b1;
-            dv_cnt     <= 2'd1;      // 현재+다음 클럭 유지
-            pending    <= 1'b0;
+            // 응답 생성 시작
+            otp_dout <= do_cmd(cmd_code_q);
+            otp_ack  <= 1'b1;
+            ack_cnt  <= (ACK_STRETCH_CYC==0) ? 8'd1 : ACK_STRETCH_CYC[7:0];
+            pstate   <= RESPOND;
           end
         end
 
-        // data_valid 유지(기존)
-        if (dv_cnt != 2'd0) begin
-          dv_cnt     <= dv_cnt - 1'b1;
-          data_valid <= 1'b1;
-        end else if (!pending) begin
-          data_valid <= 1'b0;
+        RESPOND: begin
+          // ACK 유지 종료 시 IDLE 복귀
+          if (ack_cnt == 0) begin
+            pstate <= IDLE;
+          end
         end
-      end
+      endcase
     end
-
-    assign otp_ack  = 1'b0;
-    assign otp_dout = 4'h0;
-
-  end else begin : g_pmod
-  // ---------------- PMOD (USE_PMOD=1) ---------------
-    // 신호 동기화
-    logic [2:0] sclk_sync, req_sync;
-    always_ff @(posedge clk or negedge rst_n) begin
-      if (!rst_n) begin
-        sclk_sync <= 3'b000; req_sync <= 3'b000;
-      end else begin
-        sclk_sync <= {sclk_sync[1:0], otp_sclk};
-        req_sync  <= {req_sync[1:0],  otp_req };
-      end
-    end
-
-    wire sclk_rise = (sclk_sync[2:1] == 2'b01);
-    wire req_rise  = (req_sync[2:1] == 2'b01);
-    wire req_fall  = (req_sync[2:1] == 2'b10);
-    wire req_high  =  req_sync[2];
-
-    // 프레임/헤더 래치
-    logic        in_frame;
-    logic [3:0]  sclk_cnt;
-    logic [1:0]  cmd_code_q;
-
-    // ===== DELAY PATCH (PMOD) =====
-    typedef enum logic [1:0] {IDLE, PENDING, RESPOND} pstate_e;
-    pstate_e     pstate;
-    logic [31:0] delay_cnt;
-    // ACK stretch 카운터(조금 넉넉히)
-    logic [7:0]  ack_cnt;
-    // ===============================
-
-    always_ff @(posedge clk or negedge rst_n) begin
-      if (!rst_n) begin
-        in_frame   <= 1'b0;
-        sclk_cnt   <= 4'd0;
-        cmd_code_q <= 2'b00;
-        otp_dout   <= 4'h0;
-        otp_ack    <= 1'b0;
-        // DELAY
-        pstate     <= IDLE;
-        delay_cnt  <= '0;
-        ack_cnt    <= '0;
-      end else begin
-        // 프레임 시작(기존 권장식 유지)
-        if (!in_frame && (req_rise || (req_high && sclk_rise))) begin
-          in_frame <= 1'b1;
-          sclk_cnt <= 4'd0;
-        end
-        // sclk 처리
-        if (in_frame && sclk_rise) begin
-          sclk_cnt <= sclk_cnt + 1'b1;
-        end
-        // 프레임 종료
-        if (in_frame && req_fall) begin
-          in_frame <= 1'b0;
-          sclk_cnt <= 4'd0;
-        end
-
-        // ACK stretch: 카운터가 남아있으면 유지
-        otp_ack <= (ack_cnt != 0);
-        if (ack_cnt != 0) begin
-          ack_cnt <= ack_cnt - 1'b1;
-        end
-
-        // ===== 응답 지연 상태머신 =====
-        unique case (pstate)
-          IDLE: begin
-            // 첫 sclk 상승엣지에서 CMD 샘플 (기존: sclk_cnt==10 시점)
-            if (in_frame && sclk_rise && (sclk_cnt == 4'd10)) begin
-              cmd_code_q <= otp_cmd;
-              // 지연 진입
-              pstate     <= (RESP_DELAY_CYCLES == 0) ? RESPOND : PENDING;
-              delay_cnt  <= (RESP_DELAY_CYCLES == 0) ? 32'd0    : RESP_DELAY_CYCLES - 1;
-            end
-          end
-
-          PENDING: begin
-            if (delay_cnt != 0) begin
-              delay_cnt <= delay_cnt - 1'b1;
-            end else begin
-              // 지연 종료 → 응답 생성
-              otp_dout <= do_cmd(cmd_code_q);
-              otp_ack  <= 1'b1;
-              // ACK 유지 폭 설정
-              ack_cnt  <= (ACK_STRETCH_CYC == 0) ? 8'd1 : ACK_STRETCH_CYC[7:0];
-              pstate   <= RESPOND;
-            end
-          end
-
-          RESPOND: begin
-            // ACK 소진 시 IDLE 복귀
-            if (ack_cnt == 0) begin
-              pstate <= IDLE;
-            end
-          end
-        endcase
-      end
-    end
-
-    // 루프백 출력 미사용
-    assign data_valid = 1'b0;
-    assign data_nib   = 4'h0;
-  end endgenerate
+  end
 
   // ========================================================================
-  // ★ Read-only PK access window (8×32bit = 256bit)
+  // Read-only PK access window (8×32bit = 256bit)
   //   paddr[4:2] selects word index 0..7 (byte address 기준 0x00~0x1C)
   // ========================================================================
-  wire [2:0] word_sel = paddr[4:2];
+  wire [2:0]   word_sel  = paddr[4:2];
   logic [31:0] pk_words [0:7];
 
   always_comb begin
@@ -258,8 +216,10 @@ module otp_server_link #(
 
 `ifdef TRACE
   always_ff @(posedge clk) begin
-    if (cmd_valid)  $display("%t DEV CMD=%b", $time, cmd_code);
-    if (data_valid) $display("%t DEV DATA_NIB=%h", $time, data_nib);
+    if (in_frame && sclk_rise && (sclk_cnt == 4'd10))
+      $display("%t DEV CMD=%b", $time, otp_cmd);
+    if (otp_ack) $display("%t DEV ACK=1 DOUT=%h", $time, otp_dout);
+    if (em_trig_o) $display("%t DEV EM_TRIG", $time);
   end
 `endif
 

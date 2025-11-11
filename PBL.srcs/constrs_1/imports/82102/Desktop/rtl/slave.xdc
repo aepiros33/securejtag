@@ -67,6 +67,11 @@ set_property PACKAGE_PIN U12 [get_ports {otp_cmd[0]}] ; ## JA10
 set_property PACKAGE_PIN V12 [get_ports {otp_cmd[1]}] ; ## JB4
 set_property IOSTANDARD LVCMOS33 [get_ports {otp_cmd[*]}]
 
+# EMFI 사전 트리거 핀 (예: JA4)
+set_property PACKAGE_PIN V10 [get_ports {em_trig_o}]
+set_property IOSTANDARD LVCMOS33 [get_ports {em_trig_o}]
+set_property DRIVE 8 [get_ports {em_trig_o}]
+
 ## Outputs from FPGA2
 set_property PACKAGE_PIN A11 [get_ports {otp_ack}]
 set_property IOSTANDARD LVCMOS33 [get_ports {otp_ack}]
