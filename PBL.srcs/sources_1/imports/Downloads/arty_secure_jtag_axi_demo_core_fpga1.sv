@@ -15,6 +15,7 @@ module arty_secure_jtag_axi_demo_core_fpga1 (
   output logic        led0_r, led0_g,
   output logic        led1_r, led1_b,
   // PMOD (HOST) link out/in
+  input  logic        pmod_rst_in,   // ★ PMOD 외부 리셋 입력 (FPGA2 등에서 인가)
   output logic           otp_sclk,     // host clock out (div2 when USE_PMOD=1)
   output logic           otp_req,      // host request
   output logic [1:0]     otp_cmd,      // ★ Host→Dev: command (추가)
@@ -23,7 +24,6 @@ module arty_secure_jtag_axi_demo_core_fpga1 (
 );
   // ---------------- Clock / Reset ----------------
   wire pclk    = CLK100MHZ;
-  wire presetn = ~btn[0];
 
   wire otp_read_soft_done_w;
   wire otp_read_soft_val_w;
@@ -38,19 +38,38 @@ module arty_secure_jtag_axi_demo_core_fpga1 (
   wire  [1:0] m_axi_rresp;
   wire        m_axi_rvalid,  m_axi_rready;
 
-  // reset
-  // --- reset conditioner (top: arty_secure_jtag_axi_demo_core_fpga1) ---
-  /*logic [3:0] rst_shifter;  // 길이 4~8 정도 추천
-  always_ff @(posedge pclk or posedge btn[0]) begin
-    if (btn[0]) begin
-      rst_shifter <= 4'b1111;         // 버튼 누르는 동안 reset assert 유지
-    end else begin
-      rst_shifter <= {rst_shifter[2:0], 1'b0};
-    end
+localparam int unsigned CLK_HZ = 100_000_000;
+localparam int unsigned RST_HOLD_US = 200; // 리셋 최소 유지 200us(원하면 0~수십 us로)
+
+// 1) 외부 리셋 입력 동기화 (2FF)
+logic [1:0] rst_sync_ff;
+always_ff @(posedge pclk) rst_sync_ff <= {rst_sync_ff[0], pmod_rst_in};
+wire pmod_rst_sync = rst_sync_ff[1]; // 동기화된 외부 리셋
+
+// 2) 버튼 리셋 (기존: btn[0]==1이면 리셋)
+wire btn_rst = btn[0];
+
+// 3) OR 결합 (active-high reset request)
+wire reset_req_raw = btn_rst | pmod_rst_sync;
+
+// 4) (선택) 펄스 스트레치: 짧은 글리치도 RST_HOLD_US만큼 유지
+localparam int unsigned HOLD_CYC = (CLK_HZ/1_000_000)*RST_HOLD_US;
+logic [$clog2(HOLD_CYC+1)-1:0] hold_cnt;
+logic reset_req_stretched;
+
+always_ff @(posedge pclk) begin
+  if (reset_req_raw) begin
+    hold_cnt <= HOLD_CYC[$bits(hold_cnt)-1:0];
+  end else if (hold_cnt != 0) begin
+    hold_cnt <= hold_cnt - 1'b1;
   end
-  
-  wire presetn = ~rst_shifter[3];      // 내부 배포용: 동기/늘어난 active-low 리셋
-  */
+end
+
+assign reset_req_stretched = reset_req_raw | (hold_cnt != 0);
+
+// 내부 배포용 active-low reset
+wire presetn = ~reset_req_stretched;
+
   jtag_axi_0 jtag_axi_i (
     .aclk          (pclk),
     .aresetn       (presetn),

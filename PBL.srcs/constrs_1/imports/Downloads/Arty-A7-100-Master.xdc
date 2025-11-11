@@ -72,6 +72,14 @@ set_property PACKAGE_PIN V12 [get_ports {otp_cmd[1]}] ; ## JB4
 set_property IOSTANDARD LVCMOS33 [get_ports {otp_cmd[*]}]
 set_property DRIVE 8 [get_ports {otp_cmd[*]}]
 set_property SLEW SLOW [get_ports {otp_cmd[*]}]  ; # 점퍼선이면 SLOW 권장
+
+# PMOD JC3 -> pmod_rst_in
+set_property PACKAGE_PIN V11 [get_ports {pmod_rst_in}]
+set_property IOSTANDARD LVCMOS33 [get_ports {pmod_rst_in}]
+set_property PULLDOWN true [get_ports {pmod_rst_in}]  ;# 외부 구동 없을 때 Low 유지
+# (옵션) 노이즈 많은 환경이면 SLEW SLOW 권장
+# set_property SLEW SLOW [get_ports {pmod_rst_in}]
+
 ## Inputs to FPGA1
 set_property PACKAGE_PIN A11 [get_ports {otp_ack}]
 set_property IOSTANDARD LVCMOS33 [get_ports {otp_ack}]
